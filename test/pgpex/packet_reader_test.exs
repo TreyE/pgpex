@@ -93,7 +93,6 @@ defmodule Pgpex.PacketReaderTest do
 
     {:ok, in_f} = :file.open(f_name, [:binary, :read])
     {:ok, result} = Pgpex.PacketReader.read_headers(in_f)
-    IO.inspect(result)
     parsed = Enum.map(result, fn(h) -> Pgpex.PacketReader.parse_packet(in_f, h) end)
     :file.close(in_f)
     File.rm!(f_name)

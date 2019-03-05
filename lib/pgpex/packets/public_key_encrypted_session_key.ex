@@ -1,11 +1,29 @@
 defmodule Pgpex.Packets.PublicKeyEncryptedSessionKey do
+  @pk_algo_identifiers %{
+    1 => {:rsa, :both},
+    2 => {:rsa, :encrypt},
+    3 => {:rsa, :sign}
+  }
+
   def parse(f, {:public_key_encrypted_session_key, packet_len, packet_indexes, data_len, {d_start, d_end}} = d) do
     with {:ok, _} <- :file.position(f, d_start),
-         <<version::big-unsigned-integer-size(8)>> <- IO.binread(f, 1),
-         <<key_id::binary-size(8)>> <- IO.binread(f, 8),
-         <<pk_algo::big-unsigned-integer-size(8)>> <- IO.binread(f, 1),
-         <<packet_data::binary>> <- IO.binread(f, data_len - 10) do
-      {:public_key_encrypted_session_key, version, key_id, pk_algo, packet_data}
+         {:ok, version, key_id, pk_algo} <- read_version_key_id_and_pk_algo(f),
+         key_kind = Map.get(@pk_algo_identifiers, pk_algo, {:unknown, :unknown}),
+         {:ok, encrypted_session_key} <- read_encrypted_session_key(key_kind, f) do
+      {:public_key_encrypted_session_key, version, key_id, key_kind, encrypted_session_key}
+    end
+  end
+
+  defp read_encrypted_session_key({:rsa, _}, f) do
+    Pgpex.Primatives.Mpi.read_mpi_bytes(f)
+  end
+
+  defp read_version_key_id_and_pk_algo(f) do
+    case IO.binread(f, 10) do
+      <<version::big-unsigned-integer-size(8),key_id::binary-size(8),pk_algo::big-unsigned-integer-size(8)>> -> {:ok, version, key_id, pk_algo}
+      <<data::binary>> -> {:error,{:version_key_id_and_pk_algo_data_too_short, data}}
+      :eof -> {:error,:version_key_id_and_pk_algo_data_eof}
+      {:error, e} -> {:error, {:version_key_id_and_pk_algo_data_read_error, e}}
     end
   end
 end
