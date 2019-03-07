@@ -2,71 +2,12 @@ defmodule Pgpex.SessionDecryptors.Aes do
 
   use Bitwise
 
-  defmodule MdcCalcState do
-    @sha_size 20
-
-    defstruct [
-      last_iv: nil,
-      key: nil,
-      hash_state: nil,
-      skip_file_reader: nil,
-      last_non_hash_data_position: 0,
-      current_position: 0,
-      buffer: <<>>
-    ]
-
-    def add_new_iv_and_bytes(mdc, iv, new_bytes, sfr) do
-      new_pos = mdc.current_position + byte_size(new_bytes)
-      {for_hash, for_buff} = add_to_buffer(mdc.buffer, new_bytes)
-      new_hash_state = :crypto.hash_update(mdc.hash_state, for_hash)
-      %__MODULE__{
-        mdc |
-          current_position: new_pos,
-          buffer: for_buff,
-          last_iv: iv,
-          hash_state: new_hash_state,
-          skip_file_reader: sfr
-      }
-    end
-
-    def add_new_bytes_and_finish(mdc, new_bytes) do
-      new_pos = mdc.current_position + byte_size(new_bytes)
-      {for_hash, for_buff} = add_to_buffer(mdc.buffer, new_bytes)
-      new_hash_state = :crypto.hash_update(mdc.hash_state, for_hash)
-      finish(%__MODULE__{
-        mdc |
-          current_position: new_pos,
-          buffer: for_buff,
-          hash_state: new_hash_state
-      })
-    end
-
-    def finish(%__MODULE__{buffer: buff, hash_state: hs}) do
-      digest = :crypto.hash_final(hs)
-      case buff do
-        ^digest -> {:ok, digest}
-        _ -> {:error, {:mdc_mismatch, buff, digest}}
-      end
-    end
-
-    defp add_to_buffer(buff, new_bytes) do
-      total_size = byte_size(buff) + byte_size(new_bytes)
-      full_buff = buff <> new_bytes
-      size_difference = total_size - @sha_size
-      case (size_difference > 0) do
-        false -> {<<>>, full_buff}
-        _ ->
-          {
-            :binary.part(full_buff, 0, size_difference),
-            :binary.part(full_buff, size_difference, @sha_size)
-          }
-      end
-    end
-  end
+  alias Pgpex.Primatives.MdcCalcState
+  alias Pgpex.Primatives.SkipFileReader
 
   def read_and_verify_mdc(f, key, len, [{ds, fde}|others]) do
     with({:ok, iv} <- read_initial_iv(f, ds)) do
-      sfr = Pgpex.Primatives.SkipFileReader.new(f, len - 16, [{ds + 16, fde}|others])
+      sfr = SkipFileReader.new(f, len - 16, [{ds + 16, fde}|others])
       hs = :crypto.hash_init(:sha)
       d_iv = decrypt_block(<<0::big-unsigned-integer-size(128)>>, key, iv)
       hs_start = :crypto.hash_update(hs, d_iv)
@@ -81,15 +22,8 @@ defmodule Pgpex.SessionDecryptors.Aes do
     end
   end
 
-  defp read_next_hash_part(
-      %MdcCalcState{
-        current_position: cp,
-        skip_file_reader: sfr,
-        last_iv: iv
-      } = mcs
-    ) do
-    case Pgpex.Primatives.SkipFileReader.binread(sfr, 16) do
-      :eof -> :ok
+  defp read_next_hash_part(%MdcCalcState{} = mcs) do
+    case SkipFileReader.binread(mcs.skip_file_reader, 16) do
       {:ok, sfr, <<data::binary-size(16)>>} ->
         new_bytes = decrypt_block(mcs.last_iv, mcs.key, data)
         read_next_hash_part(
@@ -100,7 +34,7 @@ defmodule Pgpex.SessionDecryptors.Aes do
           sfr
          )
         )
-      {:ok, sfr, <<data::binary>>} ->
+      {:ok, _, <<data::binary>>} ->
         new_bytes = decrypt_block(mcs.last_iv, mcs.key, data)
         MdcCalcState.add_new_bytes_and_finish(
           mcs,
