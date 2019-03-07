@@ -161,7 +161,7 @@ defmodule Pgpex.Armor.B64StreamReader do
     suggested_end = (stream.byte_pos + read_size - 1)
     {byte_end, new_pos} = case (suggested_end >= (stream.octet_length - 1)) do
                  false -> { suggested_end, suggested_end + 1 }
-                 _ -> {stream.octet_length - 1, :eof}
+                 _ -> {stream.octet_length - 1, stream.octet_length}
                end
     {start_tritet, bin_offset} = map_tritet_for_byte(stream.byte_pos)
     {end_tritet, end_bin_offset} = map_tritet_for_byte(byte_end)

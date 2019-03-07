@@ -1,5 +1,6 @@
 defmodule Pgpex.Packets.PublicKeyEncryptedSessionKeyTest do
   use ExUnit.Case
+  use Bitwise
   doctest Pgpex.Packets.PublicKeyEncryptedSessionKey
 
   test "it can decrypt the private key in a simple message" do
@@ -20,10 +21,13 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKeyTest do
       end)
     end)
     [first_message|_] = parsed_files
-    [{:public_key_encrypted_session_key, version, key_id, {:rsa, :both}, packet_data}|_] = first_message
+    [{:public_key_encrypted_session_key, version, key_id, {:rsa, :both}, packet_data},op] = first_message
     priv_key = read_rsa_priv_key()
     decrypted_session_key = :public_key.decrypt_private(packet_data, priv_key, [{:rsa_padding, :rsa_no_padding}])
-    IO.inspect(Pgpex.Primitives.SessionKey.decode_session_key(decrypted_session_key))
+    {:ok, algo, key} = (Pgpex.Primitives.SessionKey.decode_session_key(decrypted_session_key))
+    [{ds, de}|_] = op.data_indexes
+    :ok = Pgpex.SessionDecryptors.Aes.read_and_verify_first_block(op.io, ds, key)
+    {:ok, mdc} = Pgpex.SessionDecryptors.Aes.read_and_verify_mdc(op.io, key, op.data_length, op.data_indexes)
   end
 
   defp read_rsa_priv_key() do
