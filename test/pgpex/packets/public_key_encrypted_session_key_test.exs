@@ -27,7 +27,18 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKeyTest do
     {:ok, algo, key} = (Pgpex.Primitives.SessionKey.decode_session_key(decrypted_session_key))
     [{ds, de}|_] = op.data_indexes
     :ok = Pgpex.SessionDecryptors.Aes.read_and_verify_first_block(op.io, ds, key)
-    {:ok, mdc} = Pgpex.SessionDecryptors.Aes.read_and_verify_mdc(op.io, key, op.data_length, op.data_indexes)
+    {:ok, _} = Pgpex.SessionDecryptors.Aes.verify_mdc(op.io, key, op.data_length, op.data_indexes)
+    session_reader = Pgpex.SessionDecryptors.Aes.create_session_reader(
+      op.io,
+      key,
+      op.data_length,
+      op.data_indexes
+    )
+    readable_session_data = Pgpex.Primitives.Behaviours.ReadableFile.wrap_as_file(
+      Pgpex.SessionDecryptors.AesSessionStream,
+      session_reader
+    )
+    {:ok, encrypted_packet_headers} = Pgpex.PacketReader.read_headers(readable_session_data, true)
   end
 
   defp read_rsa_priv_key() do

@@ -5,7 +5,16 @@ defmodule Pgpex.SessionDecryptors.Aes do
   alias Pgpex.Primatives.MdcCalcState
   alias Pgpex.Primatives.SkipFileReader
 
-  def read_and_verify_mdc(f, key, len, [{ds, fde}|others]) do
+  def create_session_reader(f, key, length, positions) do
+    sfr = SkipFileReader.new(f, length, positions)
+    Pgpex.SessionDecryptors.AesSessionStream.new(
+      Pgpex.Primitives.Behaviours.ReadableFile.wrap_as_file(SkipFileReader, sfr),
+      key,
+      length
+    )
+  end
+
+  def verify_mdc(f, key, len, [{ds, fde}|others]) do
     with({:ok, iv} <- read_initial_iv(f, ds)) do
       sfr = SkipFileReader.new(f, len - 16, [{ds + 16, fde}|others])
       hs = :crypto.hash_init(:sha)

@@ -1,6 +1,8 @@
 defmodule Pgpex.Primatives.SkipFileReader do
   defstruct [io: nil, position: 0, length: 0, positions: []]
 
+  @behaviour Pgpex.Primitives.Behaviours.ReadableFile
+
   @type t :: %__MODULE__{
     position: non_neg_integer(),
     length: non_neg_integer()
@@ -16,49 +18,16 @@ defmodule Pgpex.Primatives.SkipFileReader do
     }
   end
 
+  @impl true
+  def close(stream) do
+    :file.close(stream.io)
+  end
+
   def wrap_as_file(stream) do
-    spawn(fn() -> loop(stream) end)
+    Pgpex.Primitives.Behaviours.ReadableFile.wrap_as_file(__MODULE__, stream)
   end
 
-  defp loop(skr) do
-    receive do
-      {:io_request, from, reply_ref, {:get_chars, :"", n}} ->
-        handle_read_request(from, reply_ref, skr, n)
-      {:file_request, from, reply_ref, {:position, p}} ->
-        handle_position_request(from, reply_ref, skr, p)
-      {:file_request, from, reply_ref, :close} ->
-        send(from, {:file_reply,reply_ref, File.close(skr.io)})
-      a ->
-        IO.inspect(a)
-        loop(skr)
-    end
-  end
-
-  defp handle_read_request(from, reply_ref, stream, n) do
-    case binread(stream, n) do
-      {:ok, new_s, data} ->
-          send(from, {:io_reply,reply_ref, data})
-          loop(new_s)
-      :eof ->
-        send(from, {:io_reply, reply_ref, :eof})
-        loop(stream)
-      a ->
-        send(from, {:io_reply, reply_ref, {:error, a}})
-        loop(stream)
-    end
-  end
-
-  defp handle_position_request(from, reply_ref, stream, p) do
-    case position(stream, p) do
-      {:ok, new_s, new_p} ->
-          send(from, {:file_reply,reply_ref, {:ok, new_p}})
-          loop(new_s)
-      a ->
-        send(from, {:file_reply, reply_ref, {:error, a}})
-        loop(stream)
-    end
-  end
-
+  @impl true
   def binread(%__MODULE__{length: l, position: pos},_) when pos >= l and pos >= 0 do
     :eof
   end
@@ -74,6 +43,15 @@ defmodule Pgpex.Primatives.SkipFileReader do
       data <> IO.binread(f, read_amount)
     end)
     {:ok, %__MODULE__{sfr| position: (max_read_pos + 1)}, read_data}
+  end
+
+  @impl true
+  def position(%__MODULE__{position: p} = sfr, :cur) do
+    {:ok, sfr, p}
+  end
+
+  def position(%__MODULE__{} = sfr, :bof) do
+    {:ok, %__MODULE__{sfr | position: 0}, 0}
   end
 
   def position(%__MODULE__{length: l}, pos) when pos > l and pos >= 0 do

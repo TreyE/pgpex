@@ -91,6 +91,13 @@ defmodule Pgpex.PacketReader do
     end
   end
 
+  def get_body_indexes_and_skip_to_next(f, start_loc, {tag, :eof}) do
+    with ({:ok, data_start_pos} <- :file.position(f, :cur)) do
+       {:ok, end_pos} = :file.position(f, :eof)
+       {tag, end_pos - start_loc, {start_loc, end_pos}, end_pos - data_start_pos + 1, {data_start_pos, end_pos}}
+    end
+  end
+
   def get_body_indexes_and_skip_to_next(f, start_loc, {tag, len}) do
     with ({:ok, data_start_pos} <- :file.position(f, :cur)) do
        {:ok, end_pos} = :file.position(f, data_start_pos + len)
@@ -115,6 +122,10 @@ defmodule Pgpex.PacketReader do
 
   defp set_tag_type(tag_val) do
     Map.get(@packet_types, tag_val, {:invalid, tag_val})
+  end
+
+  defp get_old_format_length(f, tag, :unknown) do
+    {tag, :eof}
   end
 
   defp get_old_format_length(f, tag, byte_count) do
