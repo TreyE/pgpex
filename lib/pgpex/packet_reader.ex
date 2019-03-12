@@ -38,6 +38,10 @@ defmodule Pgpex.PacketReader do
     end
   end
 
+  def parse_packet(f, {:literal_data, packet_len, packet_indexes, data_len, data_indexes} = d) do
+    Pgpex.Packets.LiteralData.parse(f, d)
+  end
+
   def parse_packet(f, {:compressed_data, packet_len, packet_indexes, data_len, data_indexes} = d) do
     Pgpex.Packets.CompressedData.parse(f, d)
   end

@@ -16,16 +16,16 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKeyTest do
       :file.position(c, :bof)
       {:ok, result} = Pgpex.PacketReader.read_headers(c)
 
-      parsed = Enum.map(result, fn(h) ->
+      Enum.map(result, fn(h) ->
         Pgpex.PacketReader.parse_packet(c, h)
       end)
     end)
     [first_message|_] = parsed_files
-    [{:public_key_encrypted_session_key, version, key_id, {:rsa, :both}, packet_data},op] = first_message
+    [{:public_key_encrypted_session_key, _, _, {:rsa, :both}, packet_data},op] = first_message
     priv_key = read_rsa_priv_key()
     decrypted_session_key = :public_key.decrypt_private(packet_data, priv_key, [{:rsa_padding, :rsa_no_padding}])
-    {:ok, algo, key} = (Pgpex.Primitives.SessionKey.decode_session_key(decrypted_session_key))
-    [{ds, de}|_] = op.data_indexes
+    {:ok, :aes_256, key} = (Pgpex.Primitives.SessionKey.decode_session_key(decrypted_session_key))
+    [{ds, _}|_] = op.data_indexes
     :ok = Pgpex.SessionDecryptors.Aes.read_and_verify_first_block(op.io, ds, key)
     {:ok, _} = Pgpex.SessionDecryptors.Aes.verify_mdc(op.io, key, op.data_length, op.data_indexes)
     session_reader = Pgpex.SessionDecryptors.Aes.create_session_reader(
@@ -43,7 +43,10 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKeyTest do
     {:ok, reader_stream} = Pgpex.Packets.CompressedData.create_reader(compressed_packet_data)
     f_reader_stream = reader_stream.__struct__.wrap_as_file(reader_stream)
     {:ok, decrypted_packet_data} = Pgpex.PacketReader.read_headers(f_reader_stream)
-    IO.inspect(decrypted_packet_data)
+    [lit_packet|_] = Enum.map(decrypted_packet_data, fn(pd) ->
+      Pgpex.PacketReader.parse_packet(f_reader_stream, pd)
+    end)
+    {:ok, _, "defmodule Pgpex.MixProject do"} = Pgpex.Primatives.SkipFileReader.binread(lit_packet.reader, 29)
   end
 
   defp read_rsa_priv_key() do

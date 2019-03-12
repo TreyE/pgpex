@@ -40,11 +40,11 @@ defmodule Pgpex.Primatives.ZlibStream do
     {:ok, %__MODULE__{moved_zl | position: 0}, 0}
   end
 
-  def position(%__MODULE__{length: l} = zl, pos) when (pos == l) do
+  def position(%__MODULE__{length: l} = zl, pos) when (pos <= l) do
     {:ok, %__MODULE__{zl | position: pos}, pos}
   end
 
-  def position(%__MODULE__{length: l}, pos) when (pos < l) do
+  def position(%__MODULE__{length: l}, pos) when (pos > l) do
     {:error, :ebadarg}
   end
 
@@ -60,8 +60,6 @@ defmodule Pgpex.Primatives.ZlibStream do
                 end
     z_ended = pull_to_range(zl, pos, end_index)
     read_data = extract_range(z_ended, pos, end_index)
-    IO.inspect(read_data)
-    IO.inspect(end_index + 1)
     {:ok, %__MODULE__{z_ended | position: (end_index + 1)}, read_data}
   end
 

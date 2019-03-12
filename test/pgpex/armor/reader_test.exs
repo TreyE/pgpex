@@ -15,10 +15,9 @@ defmodule Pgpex.Armor.ReaderTest do
       :file.position(c, :bof)
       {:ok, result} = Pgpex.PacketReader.read_headers(c)
 
-      parsed = Enum.map(result, fn(h) ->
+      Enum.map(result, fn(h) ->
         Pgpex.PacketReader.parse_packet(c, h)
       end)
-      #IO.inspect(parsed)
     end)
   end
 
