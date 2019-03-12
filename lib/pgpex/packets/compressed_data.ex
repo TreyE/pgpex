@@ -1,4 +1,6 @@
 defmodule Pgpex.Packets.CompressedData do
+  @type t :: %__MODULE__{}
+
   @compression_algos %{
     0 => :none,
     1 => :zip,

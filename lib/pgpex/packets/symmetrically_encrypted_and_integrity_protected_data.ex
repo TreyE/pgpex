@@ -1,4 +1,6 @@
 defmodule Pgpex.Packets.SymmetricallyEncryptedAndIntegrityProtectedData do
+  @type t :: %__MODULE__{}
+
   defstruct [
     version: 1,
     packet_length: 0,
@@ -35,7 +37,7 @@ defmodule Pgpex.Packets.SymmetricallyEncryptedAndIntegrityProtectedData do
         <<1::big-unsigned-integer-size(8)>> -> {:ok, 1, dis}
         <<data::binary>> -> {:error, {:unsupported_packet_version, data}}
         :eof -> {:error, :packet_version_read_eof}
-        a -> {{:error, :packet_version_read_error, a}}
+        a -> {:error, {:packet_version_read_error, a}}
       end
     end
   end

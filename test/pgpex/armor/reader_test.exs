@@ -16,7 +16,7 @@ defmodule Pgpex.Armor.ReaderTest do
       {:ok, result} = Pgpex.PacketReader.read_headers(c)
 
       Enum.map(result, fn(h) ->
-        Pgpex.PacketReader.parse_packet(c, h)
+        Pgpex.Packet.parse_packet(c, h)
       end)
     end)
   end
@@ -35,7 +35,7 @@ defmodule Pgpex.Armor.ReaderTest do
       {:ok, result} = Pgpex.PacketReader.read_headers(c)
 
       Enum.map(result, fn(h) ->
-        Pgpex.PacketReader.parse_packet(c, h)
+        Pgpex.Packet.parse_packet(c, h)
       end)
     end)
 

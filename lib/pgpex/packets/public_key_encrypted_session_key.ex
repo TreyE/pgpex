@@ -1,10 +1,27 @@
 defmodule Pgpex.Packets.PublicKeyEncryptedSessionKey do
+  @type t :: {:public_key_encrypted_session_key, any(), binary(), key_kind(), binary()}
+  @type key_kind :: {:rsa, :both} | {:rsa, :encrypt} | {:rsa, :sign}
+
   @pk_algo_identifiers %{
     1 => {:rsa, :both},
     2 => {:rsa, :encrypt},
     3 => {:rsa, :sign}
   }
 
+  @spec parse(
+          any(),
+          any()
+        ) ::
+          :eof
+          | binary()
+          | [byte()]
+          | {:error,
+             atom()
+             | {:version_key_id_and_pk_algo_data_read_error,
+                atom() | {:no_translation, :unicode, :latin1}}
+             | {:version_key_id_and_pk_algo_data_too_short, binary()}
+             | {:no_translation, :unicode, :latin1}}
+          | t()
   def parse(f, {:public_key_encrypted_session_key, packet_len, packet_indexes, data_len, {d_start, d_end}} = d) do
     with {:ok, _} <- :file.position(f, d_start),
          {:ok, version, key_id, pk_algo} <- read_version_key_id_and_pk_algo(f),

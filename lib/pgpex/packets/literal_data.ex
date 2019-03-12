@@ -1,4 +1,6 @@
 defmodule Pgpex.Packets.LiteralData do
+  @type t :: %__MODULE__{}
+
   @formats %{
     0x62 => :binary,
     0x74 => :text,

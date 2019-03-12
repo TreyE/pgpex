@@ -1,6 +1,8 @@
 defmodule Pgpex.PacketReader do
   require Bitwise
 
+  @type packet_header :: {packet_header_types(), any(), any(), any(), any()}
+
   @packet_types %{
     0 => :reserved,
     1 => :public_key_encrypted_session_key,
@@ -12,7 +14,7 @@ defmodule Pgpex.PacketReader do
     7 => :secret_subkey,
     8 => :compressed_data,
     9 => :symmetrically_encrypted_data,
-    10 => :market,
+    10 => :marker,
     11 => :literal_data,
     12 => :trust,
     13 => :user_id,
@@ -26,6 +28,18 @@ defmodule Pgpex.PacketReader do
     63 => :private_or_experimental
   }
 
+  @type packet_header_types :: unquote(Enum.reduce(Enum.uniq(Map.values(@packet_types)), (
+    quote do
+     {:invalid, any()}
+    end
+    ), fn(ele, acc) ->
+      quote do
+        unquote(acc) | unquote(ele)
+      end
+    end))
+
+  @spec read_headers(any()) ::
+          {:error, atom()} | {:ok, [packet_header()]}
   def read_headers(f) do
     read_headers(f,[])
   end
@@ -36,42 +50,6 @@ defmodule Pgpex.PacketReader do
       {:error, e} -> {:error, e}
       a -> read_headers(f, [a|headers])
     end
-  end
-
-  def parse_packet(f, {:literal_data, packet_len, packet_indexes, data_len, data_indexes} = d) do
-    Pgpex.Packets.LiteralData.parse(f, d)
-  end
-
-  def parse_packet(f, {:compressed_data, packet_len, packet_indexes, data_len, data_indexes} = d) do
-    Pgpex.Packets.CompressedData.parse(f, d)
-  end
-
-  def parse_packet(f, {:symmetrically_encrypted_and_integrity_protected_data, packet_len, packet_indexes, data_len, data_indexes} = d) do
-    Pgpex.Packets.SymmetricallyEncryptedAndIntegrityProtectedData.parse(f, d)
-  end
-
-  def parse_packet(f, {:public_key_encrypted_session_key, packet_len, packet_indexes, data_len, data_indexes} = d) do
-    Pgpex.Packets.PublicKeyEncryptedSessionKey.parse(f, d)
-  end
-
-  def parse_packet(f, {:public_key, packet_len, packet_indexes, data_len, data_indexes} = d) do
-    Pgpex.Packets.PublicKey.parse(f, d)
-  end
-
-  def parse_packet(f, {:public_subkey, packet_len, packet_indexes, data_len, data_indexes} = d) do
-    Pgpex.Packets.PublicKey.parse(f, d)
-  end
-
-  def parse_packet(f, {:secret_key, packet_len, packet_indexes, data_len, data_indexes} = d) do
-    Pgpex.Packets.SecretKey.parse(f, d)
-  end
-
-  def parse_packet(f, {:secret_subkey, packet_len, packet_indexes, data_len, data_indexes} = d) do
-    Pgpex.Packets.SecretKey.parse(f, d)
-  end
-
-  def parse_packet(_, header) do
-    header
   end
 
   def read_packet_header(f) do
@@ -132,7 +110,7 @@ defmodule Pgpex.PacketReader do
     Map.get(@packet_types, tag_val, {:invalid, tag_val})
   end
 
-  defp get_old_format_length(f, tag, :unknown) do
+  defp get_old_format_length(_, tag, :unknown) do
     {tag, :eof}
   end
 

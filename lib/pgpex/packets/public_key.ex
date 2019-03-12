@@ -1,10 +1,32 @@
 defmodule Pgpex.Packets.PublicKey do
+  @type t :: v3_packet | v4_packet
+  @type v3_packet :: {tag(), 3, <<_::32>>, binary(), algo_type(), usage()}
+  @type v4_packet :: {tag(), 4, <<_::32>>, algo_type(), usage(), any()}
+  @type tag :: :public_key | :public_subkey
+  @type usage :: :encrypt | :sign | :both
+  @type algo_type :: :rsa
+
   @pk_algo_identifiers %{
     1 => {:rsa, :both},
     2 => {:rsa, :encrypt},
     3 => {:rsa, :sign}
   }
 
+  @spec parse(
+          any(),
+          any()
+        ) ::
+          :eof
+          | binary()
+          | [byte()]
+          | {:error,
+             atom()
+             | {:key_version_and_time_data_too_sort, binary()}
+             | {:key_version_and_time_read_error, atom() | {:no_translation, :unicode, :latin1}}
+             | {:unsupported_key_type, any()}
+             | {:no_translation, :unicode, :latin1}
+             | {:unsupported_packet_version, :public_key | :public_subkey, byte()}}
+          | t()
   def parse(f, {:public_key, packet_len, packet_indexes, data_len, {d_start, d_end}} = d) do
     with {:ok, _} <- :file.position(f, d_start),
          {:ok, ver, k_time} <- read_version_and_k_time(f) do

@@ -17,7 +17,7 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKeyTest do
       {:ok, result} = Pgpex.PacketReader.read_headers(c)
 
       Enum.map(result, fn(h) ->
-        Pgpex.PacketReader.parse_packet(c, h)
+        Pgpex.Packet.parse_packet(c, h)
       end)
     end)
     [first_message|_] = parsed_files
@@ -39,13 +39,14 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKeyTest do
       session_reader
     )
     {:ok, [compressed_packet|_]} = Pgpex.PacketReader.read_headers(readable_session_data)
-    compressed_packet_data = Pgpex.PacketReader.parse_packet(readable_session_data, compressed_packet)
+    compressed_packet_data = Pgpex.Packet.parse_packet(readable_session_data, compressed_packet)
     {:ok, reader_stream} = Pgpex.Packets.CompressedData.create_reader(compressed_packet_data)
     f_reader_stream = reader_stream.__struct__.wrap_as_file(reader_stream)
     {:ok, decrypted_packet_data} = Pgpex.PacketReader.read_headers(f_reader_stream)
     [lit_packet|_] = Enum.map(decrypted_packet_data, fn(pd) ->
-      Pgpex.PacketReader.parse_packet(f_reader_stream, pd)
+      Pgpex.Packet.parse_packet(f_reader_stream, pd)
     end)
+    "mix.exs" = lit_packet.file_name
     {:ok, _, "defmodule Pgpex.MixProject do"} = Pgpex.Primatives.SkipFileReader.binread(lit_packet.reader, 29)
   end
 
@@ -63,7 +64,7 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKeyTest do
       {:ok, result} = Pgpex.PacketReader.read_headers(c)
 
       Enum.map(result, fn(h) ->
-        Pgpex.PacketReader.parse_packet(c, h)
+        Pgpex.Packet.parse_packet(c, h)
       end)
     end)
 
