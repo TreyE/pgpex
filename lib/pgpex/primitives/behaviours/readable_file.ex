@@ -10,7 +10,13 @@ defmodule Pgpex.Primitives.Behaviours.ReadableFile do
   @callback close(readable_file_struct()) :: any()
 
   def wrap_as_file(mod, stream) do
-    spawn(fn() -> loop(mod, stream) end)
+    pid = spawn(fn() -> loop(mod, stream) end)
+    case function_exported?(mod, :transfer_ownership, 2) do
+      false -> pid
+      _ ->
+        mod.transfer_ownership(stream, pid)
+        pid
+    end
   end
 
   defp loop(mod, skr) do

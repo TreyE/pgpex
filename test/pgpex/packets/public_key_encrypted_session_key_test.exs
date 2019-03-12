@@ -38,7 +38,12 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKeyTest do
       Pgpex.SessionDecryptors.AesSessionStream,
       session_reader
     )
-    {:ok, encrypted_packet_headers} = Pgpex.PacketReader.read_headers(readable_session_data, true)
+    {:ok, [compressed_packet|_]} = Pgpex.PacketReader.read_headers(readable_session_data)
+    compressed_packet_data = Pgpex.PacketReader.parse_packet(readable_session_data, compressed_packet)
+    {:ok, reader_stream} = Pgpex.Packets.CompressedData.create_reader(compressed_packet_data)
+    f_reader_stream = reader_stream.__struct__.wrap_as_file(reader_stream)
+    {:ok, decrypted_packet_data} = Pgpex.PacketReader.read_headers(f_reader_stream)
+    IO.inspect(decrypted_packet_data)
   end
 
   defp read_rsa_priv_key() do

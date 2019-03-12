@@ -15,7 +15,6 @@ defmodule Pgpex.SessionDecryptors.AesSessionStream do
   ]
 
   def new(f, key, len) do
-    IO.inspect(len)
     start_data_pos = @begin_offset
     end_data_pos = len - @end_offset - @begin_offset - 1
     %__MODULE__{
