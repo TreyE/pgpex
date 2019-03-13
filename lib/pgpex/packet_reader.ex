@@ -80,7 +80,7 @@ defmodule Pgpex.PacketReader do
   def get_body_indexes_and_skip_to_next(f, start_loc, {tag, :eof}) do
     with ({:ok, data_start_pos} <- :file.position(f, :cur)) do
        {:ok, end_pos} = :file.position(f, :eof)
-       {tag, end_pos - start_loc, {start_loc, end_pos}, end_pos - data_start_pos + 1, {data_start_pos, end_pos}}
+       {tag, end_pos - start_loc, {start_loc, end_pos - 1}, end_pos - data_start_pos, {data_start_pos, end_pos - 1}}
     end
   end
 
@@ -97,11 +97,11 @@ defmodule Pgpex.PacketReader do
         {"fake_tag", {:partial, new_read_len}} ->
           {:ok, the_pos} = :file.position(f, :cur)
           {:ok, end_pos} = :file.position(f, the_pos + new_read_len)
-          extract_part_indexes(f, len_so_far + (end_pos - s_pos), [{the_pos, end_pos - 1}|p_indexes])
+          extract_part_indexes(f, len_so_far + new_read_len, [{the_pos, end_pos - 1}|p_indexes])
         {"fake_tag", n} ->
           {:ok, the_pos} = :file.position(f, :cur)
           {:ok, end_pos} = :file.position(f, the_pos + n)
-          {len_so_far + (end_pos - s_pos), Enum.reverse([{the_pos,end_pos - 1}|p_indexes])}
+          {len_so_far + n, Enum.reverse([{the_pos,end_pos - 1}|p_indexes])}
       end
     end
   end

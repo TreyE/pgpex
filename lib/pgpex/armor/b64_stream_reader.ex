@@ -121,8 +121,8 @@ defmodule Pgpex.Armor.B64StreamReader do
     {:err, :badarg}
   end
 
-  def position(%__MODULE__{} = stream, :eof) do
-    {:ok, %__MODULE__{stream | byte_pos: :eof}, :eof}
+  def position(%__MODULE__{octet_length: ol} = stream, :eof) do
+    {:ok, %__MODULE__{stream | byte_pos: ol}, ol}
   end
 
   def position(%__MODULE__{} = stream, :bof) do
@@ -133,19 +133,15 @@ defmodule Pgpex.Armor.B64StreamReader do
     {:ok, stream, bp}
   end
 
-  def position(%__MODULE__{octet_length: ol, byte_pos: bp} = stream, :cur) when bp == ol do
-    {:ok, %__MODULE__{stream| byte_pos: :eof}, :eof}
-  end
-
-  def position(%__MODULE__{octet_length: ol} = stream, index) when index >= 0  and index == ol do
-    {:ok, %__MODULE__{stream| byte_pos: :eof}, ol}
+  def position(%__MODULE__{octet_length: ol, byte_pos: bp} = stream, :cur) when bp <= ol do
+    {:ok, %__MODULE__{stream| byte_pos: ol}, ol}
   end
 
   def position(%__MODULE__{octet_length: ol}, index) when index >= 0  and index > ol do
     {:err, :badarg}
   end
 
-  def position(%__MODULE__{octet_length: ol} = stream, index) when index >= 0  and index < ol do
+  def position(%__MODULE__{octet_length: ol} = stream, index) when index >= 0  and index <= ol do
     {:ok, %__MODULE__{stream | byte_pos: index}, index}
   end
 

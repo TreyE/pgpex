@@ -178,7 +178,6 @@ defmodule Pgpex.Primatives.ZlibStream do
           {:finished, [output]} ->
             {new_skr, z, current_buffer <> output, buffer_start, buffer_length + byte_size(output)}
           {:finished, []} ->
-            IO.inspect("DONE HERE")
             pull_buffer(new_skr, z, current_buffer, buffer_start, buffer_length)
         end
       :eof -> {skr, z, current_buffer, buffer_start, buffer_length}
@@ -208,15 +207,14 @@ defmodule Pgpex.Primatives.ZlibStream do
     case Pgpex.Primatives.SkipFileReader.binread(skr, 4096) do
       {:ok, new_skr, <<data::binary>>} ->
         case :zlib.safeInflate(z, data) do
-          {:continue, [<<>>]} -> zlib_unfold_loop({:run_z, z, new_skr, current_data})
-          {:continue, [c_output]} -> {c_output,}
-          {:finished, [output]} -> {output, {:run_z, z, new_skr, <<>>}}
+          {:continue, []} -> zlib_unfold_loop({:run_z, z, new_skr, current_data})
+          {:continue, [c_output]} -> {current_data <> c_output, {:run_z, z, new_skr, <<>>}}
+          {:finished, [output]} -> {current_data <> output, {:run_z, z, new_skr, <<>>}}
           {:finished, []} -> zlib_unfold_loop({:run_z, z, new_skr, current_data})
         end
       :eof ->
         {current_data, :stop}
       a ->
-        IO.inspect(a)
         nil
     end
   end

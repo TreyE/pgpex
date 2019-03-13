@@ -10,11 +10,12 @@ defmodule Pgpex.Primatives.SkipFileReader do
   @type position :: {non_neg_integer(), non_neg_integer()}
 
   @spec new(any(), non_neg_integer(), [position()]) :: Pgpex.Primatives.SkipFileReader.t()
-  def new(f, size, positions) do
+  def new(f, _, positions) do
+    {length, poses} = map_indexes(positions)
     %__MODULE__{
-      length: size,
+      length: length,
       io: f,
-      positions: map_indexes(positions)
+      positions: poses
     }
   end
 
@@ -33,7 +34,7 @@ defmodule Pgpex.Primatives.SkipFileReader do
   end
 
   def binread(%__MODULE__{io: f, length: l, position: pos, positions: p} = sfr, len) when len >= 0 do
-    max_read_pos = case ((pos + len) > l) do
+    max_read_pos = case ((pos + len) >= l) do
       false -> pos + len - 1
       _ -> l - 1
     end
@@ -46,6 +47,8 @@ defmodule Pgpex.Primatives.SkipFileReader do
   end
 
   @impl true
+  @spec position(Pgpex.Primatives.SkipFileReader.t(), any()) ::
+          {:error, :einval} | {:ok, Pgpex.Primatives.SkipFileReader.t(), any()}
   def position(%__MODULE__{position: p} = sfr, :cur) do
     {:ok, sfr, p}
   end
@@ -97,10 +100,10 @@ defmodule Pgpex.Primatives.SkipFileReader do
 
   def map_indexes(positions) do
     poses = List.keysort(positions, 0)
-    {pos_entries, _} = Enum.reduce(poses, {[], 0}, fn({s,e},{col,off}) ->
+    {pos_entries, len} = Enum.reduce(poses, {[], 0}, fn({s,e},{col,off}) ->
          part_len = (e - s) + 1
          {[{off, part_len + off - 1, s, e}|col], off + part_len}
        end)
-    Enum.reverse(pos_entries)
+    {len, Enum.reverse(pos_entries)}
   end
 end

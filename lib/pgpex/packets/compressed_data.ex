@@ -18,7 +18,6 @@ defmodule Pgpex.Packets.CompressedData do
     reader: nil
   ]
 
-
   def parse(f, {:compressed_data, packet_len, packet_indexes, data_len, positions} = d) do
     with {file_start, data_length, data_positions} <- data_indexes(data_len, positions),
          {:ok, read_algo} <- read_algo(f, file_start) do
