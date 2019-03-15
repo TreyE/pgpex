@@ -44,8 +44,8 @@ defmodule Pgpex.Armor.ReaderTest do
     rsa_pub_packet = Enum.at(pub_key, 0)
     rsa_priv_packet = Enum.at(priv_key, 0)
 
-    {:public_key, 4, <<92, 121, 129, 46>>, :rsa, :both, rsa_pub_key} = rsa_pub_packet
-    {:secret_key, 4, <<92, 121, 129, 46>>, :rsa, :both, rsa_priv_key} = rsa_priv_packet
+    %Pgpex.Packets.PublicKey{tag: :public_key, version: 4, key_time: <<92, 121, 129, 46>>, algo_type: :rsa, usage: :both, public_key: rsa_pub_key} = rsa_pub_packet
+    %Pgpex.Packets.SecretKey{tag: :secret_key, version: 4, key_time: <<92, 121, 129, 46>>, algo_type: :rsa, usage: :both, secret_key: rsa_priv_key} = rsa_priv_packet
     test_text = "FRANK"
     ct = :public_key.encrypt_public(test_text,rsa_pub_key)
     ^test_text = :public_key.decrypt_private(ct, rsa_priv_key)

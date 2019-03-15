@@ -5,6 +5,8 @@ defmodule Pgpex.SessionDecryptors.Aes do
   alias Pgpex.Primatives.MdcCalcState
   alias Pgpex.Primatives.SkipFileReader
 
+  import Pgpex.Primatives.IOUtils
+
   def create_session_reader(f, key, length, positions) do
     sfr = SkipFileReader.new(f, length, positions)
     Pgpex.SessionDecryptors.AesSessionStream.new(
@@ -67,21 +69,16 @@ defmodule Pgpex.SessionDecryptors.Aes do
   end
 
   defp read_initial_iv(f, start_pos) do
-    :file.position(f, start_pos)
-    case IO.binread(f, 16) do
-      <<read_iv::binary-size(16)>> -> {:ok, read_iv}
-      <<bad_data::binary>> -> {:error, {:iv_too_short, bad_data}}
-      :eof -> {:error, :eof_reading_iv}
-      a -> {:error, a}
+    with (:ok <- seek_or_error(f, start_pos, :iv_seek_error)) do
+      binread_match(f, 16, :eof_reading_iv, :iv_too_short) do
+        <<read_iv::binary-size(16)>> -> {:ok, read_iv}
+      end
     end
   end
 
   defp read_first_block_for_verification(f) do
-    case IO.binread(f, 16) do
+    binread_match(f, 16, :eof_reading_first_block, :first_block_too_short) do
       <<read_first_block::binary-size(16)>> -> {:ok, read_first_block}
-      <<bad_data::binary>> -> {:error, {:first_block_to_short, bad_data}}
-      :eof -> {:error, :eof_reading_first_block}
-      a -> {:error, a}
     end
   end
 

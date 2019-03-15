@@ -161,7 +161,7 @@ defmodule Pgpex.PacketReaderTest do
     priv_key = Enum.at(all_entries, 1)
     rsa_priv_packet = Enum.at(priv_key, 3)
 
-    {:secret_subkey, 4, <<92, 121, 129, 46>>, :rsa, :both, rsa_priv_key} = rsa_priv_packet
+    %Pgpex.Packets.SecretKey{tag: :secret_subkey, version: 4, key_time: <<92, 121, 129, 46>>, algo_type: :rsa, usage: :both, secret_key: rsa_priv_key} = rsa_priv_packet
     rsa_priv_key
   end
 end

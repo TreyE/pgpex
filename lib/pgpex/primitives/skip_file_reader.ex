@@ -48,7 +48,8 @@ defmodule Pgpex.Primatives.SkipFileReader do
 
   @impl true
   @spec position(Pgpex.Primatives.SkipFileReader.t(), any()) ::
-          {:error, :einval} | {:ok, Pgpex.Primatives.SkipFileReader.t(), any()}
+          {:'error', atom()} |
+          {:ok, Pgpex.Primatives.SkipFileReader.t(), any()}
   def position(%__MODULE__{position: p} = sfr, :cur) do
     {:ok, sfr, p}
   end
