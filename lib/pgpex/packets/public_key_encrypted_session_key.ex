@@ -12,17 +12,14 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKey do
           any(),
           any()
         ) ::
-          :eof
-          | binary()
-          | [byte()]
-          | {:error,
+          {:error,
              atom()
              | {:version_key_id_and_pk_algo_data_read_error,
                 atom() | {:no_translation, :unicode, :latin1}}
              | {:version_key_id_and_pk_algo_data_too_short, binary()}
              | {:no_translation, :unicode, :latin1}}
           | t()
-  def parse(f, {:public_key_encrypted_session_key, packet_len, packet_indexes, data_len, {d_start, d_end}} = d) do
+  def parse(f, {:public_key_encrypted_session_key, _packet_len, _packet_indexes, _data_len, {d_start, _d_end}}) do
     with {:ok, _} <- :file.position(f, d_start),
          {:ok, version, key_id, pk_algo} <- read_version_key_id_and_pk_algo(f),
          key_kind = Map.get(@pk_algo_identifiers, pk_algo, {:unknown, :unknown}),
@@ -40,7 +37,7 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKey do
       <<version::big-unsigned-integer-size(8),key_id::binary-size(8),pk_algo::big-unsigned-integer-size(8)>> -> {:ok, version, key_id, pk_algo}
       <<data::binary>> -> {:error,{:version_key_id_and_pk_algo_data_too_short, data}}
       :eof -> {:error,:version_key_id_and_pk_algo_data_eof}
-      {:error, e} -> {:error, {:version_key_id_and_pk_algo_data_read_error, e}}
+      e -> {:error, {:version_key_id_and_pk_algo_data_read_error, e}}
     end
   end
 end

@@ -18,7 +18,14 @@ defmodule Pgpex.Packets.CompressedData do
     reader: nil
   ]
 
-  def parse(f, {:compressed_data, packet_len, packet_indexes, data_len, positions} = d) do
+  @spec parse(
+          any(),
+          Pgpex.PacketReader.packet_header()
+        ) ::
+          {:error,
+           atom() | binary() | [byte()] | {:error, atom() | {:no_translation, :unicode, :latin1}}}
+          | Pgpex.Packets.CompressedData.t()
+  def parse(f, {:compressed_data, packet_len, packet_indexes, data_len, positions}) do
     with {file_start, data_length, data_positions} <- data_indexes(data_len, positions),
          {:ok, read_algo} <- read_algo(f, file_start) do
       skr = Pgpex.Primatives.SkipFileReader.new(f, data_length, data_positions)

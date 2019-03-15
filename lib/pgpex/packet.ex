@@ -13,39 +13,36 @@ defmodule Pgpex.Packet do
     ) ::
       packet() |
       Pgpex.PacketReader.packet_header() |
-      {:error, any()} |
-      binary() |
-      [byte()] |
-      :eof
-  def parse_packet(f, {:literal_data, packet_len, packet_indexes, data_len, data_indexes} = d) do
+      {:error, any()}
+  def parse_packet(f, {:literal_data, _packet_len, _packet_indexes, _data_len, _data_indexes} = d) do
     Pgpex.Packets.LiteralData.parse(f, d)
   end
 
-  def parse_packet(f, {:compressed_data, packet_len, packet_indexes, data_len, data_indexes} = d) do
+  def parse_packet(f, {:compressed_data, _packet_len, _packet_indexes, _data_len, _data_indexes} = d) do
     Pgpex.Packets.CompressedData.parse(f, d)
   end
 
-  def parse_packet(f, {:symmetrically_encrypted_and_integrity_protected_data, packet_len, packet_indexes, data_len, data_indexes} = d) do
+  def parse_packet(f, {:symmetrically_encrypted_and_integrity_protected_data, _packet_len, _packet_indexes, _data_len, _data_indexes} = d) do
     Pgpex.Packets.SymmetricallyEncryptedAndIntegrityProtectedData.parse(f, d)
   end
 
-  def parse_packet(f, {:public_key_encrypted_session_key, packet_len, packet_indexes, data_len, data_indexes} = d) do
+  def parse_packet(f, {:public_key_encrypted_session_key, _packet_len, _packet_indexes, _data_len, _data_indexes} = d) do
     Pgpex.Packets.PublicKeyEncryptedSessionKey.parse(f, d)
   end
 
-  def parse_packet(f, {:public_key, packet_len, packet_indexes, data_len, data_indexes} = d) do
+  def parse_packet(f, {:public_key, _packet_len, _packet_indexes, _data_len, _data_indexes} = d) do
     Pgpex.Packets.PublicKey.parse(f, d)
   end
 
-  def parse_packet(f, {:public_subkey, packet_len, packet_indexes, data_len, data_indexes} = d) do
+  def parse_packet(f, {:public_subkey, _packet_len, _packet_indexes, _data_len, _data_indexes} = d) do
     Pgpex.Packets.PublicKey.parse(f, d)
   end
 
-  def parse_packet(f, {:secret_key, packet_len, packet_indexes, data_len, data_indexes} = d) do
+  def parse_packet(f, {:secret_key, _packet_len, _packet_indexes, _data_len, _data_indexes} = d) do
     Pgpex.Packets.SecretKey.parse(f, d)
   end
 
-  def parse_packet(f, {:secret_subkey, packet_len, packet_indexes, data_len, data_indexes} = d) do
+  def parse_packet(f, {:secret_subkey, _packet_len, _packet_indexes, _data_len, _data_indexes} = d) do
     Pgpex.Packets.SecretKey.parse(f, d)
   end
 

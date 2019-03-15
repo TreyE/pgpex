@@ -10,6 +10,16 @@ defmodule Pgpex.Packets.SymmetricallyEncryptedAndIntegrityProtectedData do
     io: nil
   ]
 
+  @spec parse(
+          any(),
+          Pgpex.PacketReader.packet_header()
+        ) ::
+          {:error,
+           atom()
+           | {:packet_version_read_error,
+              binary() | [byte()] | {:error, atom() | {any(), any(), any()}}}
+           | {:unsupported_packet_version, binary()}}
+          | Pgpex.Packets.SymmetricallyEncryptedAndIntegrityProtectedData.t()
   def parse(f, {:symmetrically_encrypted_and_integrity_protected_data, packet_len, packet_indexes, data_len, p_indexes}) do
     with({:ok, version, dis} <- read_version(f, p_indexes))do
       %__MODULE__{

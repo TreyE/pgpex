@@ -1,4 +1,5 @@
 defmodule Pgpex.Packets.LiteralData do
+
   @type t :: %__MODULE__{}
 
   @formats %{
@@ -19,7 +20,9 @@ defmodule Pgpex.Packets.LiteralData do
     file_name: nil
   ]
 
-  def parse(f, {:literal_data, packet_len, packet_indexes, data_len, positions} = d) do
+  import Pgpex.Primatives.IOUtils
+
+  def parse(f, {:literal_data, packet_len, packet_indexes, data_len, positions}) do
     with {file_start, data_length, data_positions} <- data_indexes(data_len, positions),
          {:ok, format} <- read_format(f, file_start),
          {:ok, file_name, date, lit_len, lit_pos} <- read_file_name_and_data_date(f, data_length, data_positions) do
@@ -49,12 +52,36 @@ defmodule Pgpex.Packets.LiteralData do
   end
 
   defp read_file_name_and_data_date(f, d_len, [{s_start, s_end}|others]) do
-     with <<fn_len::unsigned-big-integer-size(8)>> <- IO.binread(f, 1),
-          <<f_name::binary>> <- IO.binread(f, fn_len),
-          <<date::binary-size(4)>> <- IO.binread(f, 4) do
+     with {:ok, fn_len} <- read_fn_len(f),
+          {:ok, f_name} <- read_fname(f, fn_len),
+          {:ok, date} <- read_date(f) do
         {:ok, f_name, date, d_len - 5 - fn_len, [{s_start + 5 + fn_len,s_end}|others]}
      end
   end
+
+  defp read_fname(f, fname_len) do
+    case IO.binread(f,fname_len) do
+      <<f_name::binary-size(fname_len)>> -> {:ok, f_name}
+      <<invalid_data::binary>> -> {:error, {:file_name_read_too_short, invalid_data}}
+      :eof -> {:error, :file_name_read_eof}
+      a -> {:error, a}
+    end
+  end
+
+
+  defp read_fn_len(f) do
+    binread_match(f, 1, :file_name_length_read_eof, :file_name_length_invalid) do
+      <<fn_len::unsigned-big-integer-size(8)>> -> {:ok, fn_len}
+    end
+  end
+
+  defp read_date(f) do
+    binread_match(f, 4, :date_read_eof, :date_invalid) do
+      <<date::binary-size(4)>> -> {:ok, date}
+    end
+  end
+
+
 
   defp data_indexes(length, {s_pos, e_pos}) do
     {s_pos, length - 1, [{s_pos + 1, e_pos}]}
