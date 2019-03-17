@@ -111,7 +111,7 @@ defmodule Pgpex.PacketReaderTest do
     :file.position(bsr, :bof)
     {:ok, headers} = Pgpex.PacketReader.read_headers(bsr)
     packet_results = Enum.map(headers, fn(h) -> Pgpex.Packet.parse_packet(bsr, h) end)
-    [{:public_key_encrypted_session_key, _, _, {:rsa, :both}, packet_data},op] = packet_results
+    [%Pgpex.Packets.PublicKeyEncryptedSessionKey{key_kind:  {:rsa, :both}, encrypted_session_key: packet_data},op] = packet_results
     priv_key = read_rsa_priv_key()
     decrypted_session_key = :public_key.decrypt_private(packet_data, priv_key, [{:rsa_padding, :rsa_no_padding}])
     {:ok, :aes_256, key} = (Pgpex.Primitives.SessionKey.decode_session_key(decrypted_session_key))

@@ -90,6 +90,7 @@ defmodule Pgpex.Armor.B64StreamReader do
     end
   end
 
+  @dialyzer({:unmatched_returns, {:missing_final_byte_count, 5}})
   defp missing_final_byte_count(f, data_start, b64_len, skip_start, skip_size) do
     last_data_index = data_start + map_pos(b64_len - 2, skip_start, skip_size)
     :file.position(f, {:bof, last_data_index})

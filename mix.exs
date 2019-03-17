@@ -11,7 +11,8 @@ defmodule Pgpex.MixProject do
       dialyzer: [
         flags: [
           :unmatched_returns,
-          :overspecs
+          :overspecs,
+          :error_handling
         ]
       ]
     ]

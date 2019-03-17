@@ -1,5 +1,10 @@
 defmodule Pgpex.Packets.PublicKeyEncryptedSessionKey do
-  @type t :: {:public_key_encrypted_session_key, any(), binary(), key_kind(), binary()}
+  @type t :: %__MODULE__{
+    version: 3,
+    key_id: binary(),
+    key_kind: {:rsa, :sign | :encrypt | :both},
+    encrypted_session_key: binary()
+  }
   @type key_kind :: {:rsa, :both} | {:rsa, :encrypt} | {:rsa, :sign}
 
   @pk_algo_identifiers %{
@@ -7,6 +12,13 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKey do
     2 => {:rsa, :encrypt},
     3 => {:rsa, :sign}
   }
+
+  defstruct [
+    version: 3,
+    key_id: nil,
+    key_kind: {:rsa, :both},
+    encrypted_session_key: nil
+  ]
 
   @spec parse(
           any(),
@@ -24,7 +36,12 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKey do
          {:ok, version, key_id, pk_algo} <- read_version_key_id_and_pk_algo(f),
          key_kind = Map.get(@pk_algo_identifiers, pk_algo, {:unknown, :unknown}),
          {:ok, encrypted_session_key} <- read_encrypted_session_key(key_kind, f) do
-      {:public_key_encrypted_session_key, version, key_id, key_kind, encrypted_session_key}
+      %__MODULE__{
+        version: version,
+        key_id: key_id,
+        key_kind: key_kind,
+        encrypted_session_key: encrypted_session_key
+      }
     end
   end
 
