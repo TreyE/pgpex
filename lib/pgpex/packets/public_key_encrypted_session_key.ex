@@ -22,7 +22,7 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKey do
 
   @spec parse(
           any(),
-          any()
+          Pgpex.PacketHeader.t(:public_key_encrypted_session_key)
         ) ::
           {:error,
              atom()
@@ -31,7 +31,7 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKey do
              | {:version_key_id_and_pk_algo_data_too_short, binary()}
              | {:no_translation, :unicode, :latin1}}
           | t()
-  def parse(f, {:public_key_encrypted_session_key, _packet_len, _packet_indexes, _data_len, {d_start, _d_end}}) do
+  def parse(f, %Pgpex.PacketHeader{tag: :public_key_encrypted_session_key, data_locations: {d_start, _d_end}}) do
     with {:ok, _} <- :file.position(f, d_start),
          {:ok, version, key_id, pk_algo} <- read_version_key_id_and_pk_algo(f),
          key_kind = Map.get(@pk_algo_identifiers, pk_algo, {:unknown, :unknown}),

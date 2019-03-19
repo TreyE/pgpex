@@ -43,7 +43,7 @@ defmodule Pgpex.Packets.SecretKey do
 
   @spec parse(
           any(),
-          Pgpex.PacketReader.packet_header()
+          Pgpex.PacketHeader.t(:secret_key | :secret_subkey)
           ) ::
           {:error,
              atom()
@@ -53,14 +53,14 @@ defmodule Pgpex.Packets.SecretKey do
              | {:no_translation, :unicode, :latin1}
              | {:unsupported_packet_version, :secret_key | :secret_subkey, byte()}}
           | t()
-  def parse(f, {:secret_key, _packet_len, _packet_indexes, data_len, {d_start, _d_end}}) do
+  def parse(f, %Pgpex.PacketHeader{tag: :secret_key, data_length: data_len, data_locations: {d_start, _d_end}}) do
     with {:ok, _} <- :file.position(f, d_start),
          {:ok, ver, k_time} <- Pgpex.Packets.KeyPacket.read_version_and_k_time(f) do
       read_packet(:secret_key, f, ver, k_time, data_len - 5)
     end
   end
 
-  def parse(f, {:secret_subkey, _packet_len, _packet_indexes, data_len, {d_start, _d_end}}) do
+  def parse(f, %Pgpex.PacketHeader{tag: :secret_subkey, data_length: data_len, data_locations: {d_start, _d_end}}) do
     with {:ok, _} <- :file.position(f, d_start),
          {:ok, ver, k_time} <- Pgpex.Packets.KeyPacket.read_version_and_k_time(f) do
       read_packet(:secret_subkey, f, ver, k_time, data_len - 5)

@@ -1,45 +1,8 @@
 defmodule Pgpex.PacketReader do
   require Bitwise
 
-  @type packet_header :: {packet_header_types(), any(), any(), any(), any()}
-
-  @packet_types %{
-    0 => :reserved,
-    1 => :public_key_encrypted_session_key,
-    2 => :signature,
-    3 => :symmetric_key_encrypted_session,
-    4 => :one_pass_signature,
-    5 => :secret_key,
-    6 => :public_key,
-    7 => :secret_subkey,
-    8 => :compressed_data,
-    9 => :symmetrically_encrypted_data,
-    10 => :marker,
-    11 => :literal_data,
-    12 => :trust,
-    13 => :user_id,
-    14 => :public_subkey,
-    17 => :user_attribute,
-    18 => :symmetrically_encrypted_and_integrity_protected_data,
-    19 => :modification_detection_code,
-    60 => :private_or_experimental,
-    61 => :private_or_experimental,
-    62 => :private_or_experimental,
-    63 => :private_or_experimental
-  }
-
-  @type packet_header_types :: unquote(Enum.reduce(Enum.uniq(Map.values(@packet_types)), (
-    quote do
-     {:invalid, any()}
-    end
-    ), fn(ele, acc) ->
-      quote do
-        unquote(acc) | unquote(ele)
-      end
-    end))
-
   @spec read_headers(any()) ::
-          {:error, atom()} | {:ok, [packet_header()]}
+          {:error, atom()} | {:ok, [Pgpex.PacketHeader.t()]}
   def read_headers(f) do
     read_headers(f,[])
   end
@@ -55,7 +18,7 @@ defmodule Pgpex.PacketReader do
   def read_packet_header(f) do
     with {:ok, start_loc} <- :file.position(f, :cur),
          {tag, len} <- read_tag_and_length(f) do
-      get_body_indexes_and_skip_to_next(f, start_loc, {set_tag_type(tag), len})
+      get_body_indexes_and_skip_to_next(f, start_loc, {tag, len})
     end
   end
 
@@ -68,26 +31,44 @@ defmodule Pgpex.PacketReader do
     end
   end
 
-  def get_body_indexes_and_skip_to_next(f, start_loc, {tag, {:partial, len_so_far}}) do
+  defp get_body_indexes_and_skip_to_next(f, start_loc, {tag, {:partial, len_so_far}}) do
     with ({:ok, data_start_pos} <- :file.position(f, :cur)) do
        {:ok, end_loc} = :file.position(f, data_start_pos + len_so_far)
        {total_len, p_indexes} = extract_part_indexes(f, len_so_far, [{data_start_pos, end_loc - 1}])
        {:ok, last_loc} = :file.position(f, :cur)
-       {tag, (last_loc - start_loc), {start_loc, last_loc - 1}, total_len, p_indexes}
+       Pgpex.PacketHeader.new(
+         tag,
+         (last_loc - start_loc),
+         {start_loc, last_loc - 1},
+         total_len,
+         p_indexes
+       )
     end
   end
 
-  def get_body_indexes_and_skip_to_next(f, start_loc, {tag, :eof}) do
+  defp get_body_indexes_and_skip_to_next(f, start_loc, {tag, :eof}) do
     with ({:ok, data_start_pos} <- :file.position(f, :cur)) do
        {:ok, end_pos} = :file.position(f, :eof)
-       {tag, end_pos - start_loc, {start_loc, end_pos - 1}, end_pos - data_start_pos, {data_start_pos, end_pos - 1}}
+       Pgpex.PacketHeader.new(
+         tag,
+         end_pos - start_loc,
+         {start_loc, end_pos - 1},
+         end_pos - data_start_pos,
+         {data_start_pos, end_pos - 1}
+       )
     end
   end
 
-  def get_body_indexes_and_skip_to_next(f, start_loc, {tag, len}) do
+  defp get_body_indexes_and_skip_to_next(f, start_loc, {tag, len}) do
     with ({:ok, data_start_pos} <- :file.position(f, :cur)) do
        {:ok, end_pos} = :file.position(f, data_start_pos + len)
-       {tag, end_pos - start_loc, {start_loc, data_start_pos + len - 1}, len, {data_start_pos, data_start_pos + len - 1}}
+       Pgpex.PacketHeader.new(
+         tag,
+         end_pos - start_loc,
+         {start_loc, data_start_pos + len - 1},
+         len,
+         {data_start_pos, data_start_pos + len - 1}
+       )
     end
   end
 
@@ -104,10 +85,6 @@ defmodule Pgpex.PacketReader do
           {len_so_far + n, Enum.reverse([{the_pos,end_pos - 1}|p_indexes])}
       end
     end
-  end
-
-  defp set_tag_type(tag_val) do
-    Map.get(@packet_types, tag_val, {:invalid, tag_val})
   end
 
   defp get_old_format_length(_, tag, :unknown) do

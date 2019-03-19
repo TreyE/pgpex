@@ -9,44 +9,44 @@ defmodule Pgpex.Packet do
 
   @spec parse_packet(
     any(),
-    Pgpex.PacketReader.packet_header()
+    Pgpex.PacketHeader.t()
     ) ::
       packet() |
-      Pgpex.PacketReader.packet_header() |
+      Pgpex.PacketHeader.t() |
       {:error, any()}
-  def parse_packet(f, {:literal_data, _packet_len, _packet_indexes, _data_len, _data_indexes} = d) do
+  def parse_packet(f, %Pgpex.PacketHeader{tag: :literal_data} = d) do
     Pgpex.Packets.LiteralData.parse(f, d)
   end
 
-  def parse_packet(f, {:compressed_data, _packet_len, _packet_indexes, _data_len, _data_indexes} = d) do
+  def parse_packet(f, %Pgpex.PacketHeader{tag: :compressed_data} = d) do
     Pgpex.Packets.CompressedData.parse(f, d)
   end
 
-  def parse_packet(f, {:symmetrically_encrypted_and_integrity_protected_data, _packet_len, _packet_indexes, _data_len, _data_indexes} = d) do
+  def parse_packet(f, %Pgpex.PacketHeader{tag: :symmetrically_encrypted_and_integrity_protected_data} = d) do
     Pgpex.Packets.SymmetricallyEncryptedAndIntegrityProtectedData.parse(f, d)
   end
 
-  def parse_packet(f, {:public_key_encrypted_session_key, _packet_len, _packet_indexes, _data_len, _data_indexes} = d) do
+  def parse_packet(f, %Pgpex.PacketHeader{tag: :public_key_encrypted_session_key} = d) do
     Pgpex.Packets.PublicKeyEncryptedSessionKey.parse(f, d)
   end
 
-  def parse_packet(f, {:public_key, _packet_len, _packet_indexes, _data_len, _data_indexes} = d) do
+  def parse_packet(f, %Pgpex.PacketHeader{tag: :public_key} = d) do
     Pgpex.Packets.PublicKey.parse(f, d)
   end
 
-  def parse_packet(f, {:public_subkey, _packet_len, _packet_indexes, _data_len, _data_indexes} = d) do
+  def parse_packet(f, %Pgpex.PacketHeader{tag: :public_subkey} = d) do
     Pgpex.Packets.PublicKey.parse(f, d)
   end
 
-  def parse_packet(f, {:secret_key, _packet_len, _packet_indexes, _data_len, _data_indexes} = d) do
+  def parse_packet(f, %Pgpex.PacketHeader{tag: :secret_key} = d) do
     Pgpex.Packets.SecretKey.parse(f, d)
   end
 
-  def parse_packet(f, {:secret_subkey, _packet_len, _packet_indexes, _data_len, _data_indexes} = d) do
+  def parse_packet(f, %Pgpex.PacketHeader{tag: :secret_subkey} = d) do
     Pgpex.Packets.SecretKey.parse(f, d)
   end
 
-  def parse_packet(_, {{:invalid, _},_,_,_,_} = header) do
+  def parse_packet(_, %Pgpex.PacketHeader{tag: {:invalid, _}} = header) do
     header
   end
 
@@ -63,7 +63,7 @@ defmodule Pgpex.Packet do
     :modification_detection_code,
     :private_or_experimental],
     fn(item) ->
-      def parse_packet(_, {unquote(item),_,_,_,_} = header) do
+      def parse_packet(_, %Pgpex.PacketHeader{tag: unquote(item)} = header) do
         header
       end
   end)

@@ -22,7 +22,13 @@ defmodule Pgpex.Packets.LiteralData do
 
   import Pgpex.Primatives.IOUtils
 
-  def parse(f, {:literal_data, packet_len, packet_indexes, data_len, positions}) do
+  @spec parse(
+          any(),
+          Pgpex.PacketHeader.t(:literal_data)
+        )  ::
+        {:error, any()}
+        | t()
+  def parse(f, %Pgpex.PacketHeader{tag: :literal_data, packet_length: packet_len, packet_locations: packet_indexes, data_length: data_len, data_locations: positions}) do
     with {file_start, data_length, data_positions} <- data_indexes(data_len, positions),
          {:ok, format} <- read_format(f, file_start),
          {:ok, file_name, date, lit_len, lit_pos} <- read_file_name_and_data_date(f, data_length, data_positions) do

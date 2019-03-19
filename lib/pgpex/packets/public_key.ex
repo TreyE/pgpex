@@ -39,7 +39,7 @@ defmodule Pgpex.Packets.PublicKey do
 
   @spec parse(
           any(),
-          Pgpex.PacketReader.packet_header()
+          Pgpex.PacketHeader.t(:public_key | :public_subkey)
           ) ::
           {:error,
              atom()
@@ -49,14 +49,14 @@ defmodule Pgpex.Packets.PublicKey do
              | {:no_translation, :unicode, :latin1}
              | {:unsupported_packet_version, :public_key | :public_subkey, byte()}}
           | t()
-  def parse(f, {:public_key, _packet_len, _packet_indexes, data_len, {d_start, _d_end}}) do
+  def parse(f, %Pgpex.PacketHeader{tag: :public_key, data_length: data_len, data_locations: {d_start, _d_end}}) do
     with {:ok, _} <- :file.position(f, d_start),
          {:ok, ver, k_time} <- Pgpex.Packets.KeyPacket.read_version_and_k_time(f) do
       read_packet(:public_key, f, ver, k_time, data_len - 5)
     end
   end
 
-  def parse(f, {:public_subkey, _packet_len, _packet_indexes, data_len, {d_start, _d_end}}) do
+  def parse(f,  %Pgpex.PacketHeader{tag: :public_subkey, data_length: data_len, data_locations: {d_start, _d_end}}) do
     with {:ok, _} <- :file.position(f, d_start),
          {:ok, ver, k_time} <- Pgpex.Packets.KeyPacket.read_version_and_k_time(f) do
       read_packet(:public_subkey, f, ver, k_time, data_len - 5)
