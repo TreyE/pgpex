@@ -1,6 +1,4 @@
 defmodule Pgpex.PacketHeader do
-  @type old_packet_header :: {packet_header_types(), any(), any(), any(), any()}
-
   @packet_types %{
     0 => :reserved,
     1 => :public_key_encrypted_session_key,
