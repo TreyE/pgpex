@@ -1,4 +1,4 @@
-defmodule Pgpex.Primatives.SkipFileReader do
+defmodule Pgpex.Primitives.SkipFileReader do
   defstruct [io: nil, position: 0, length: 0, positions: []]
 
   @behaviour Pgpex.Primitives.Behaviours.ReadableFile
@@ -9,7 +9,7 @@ defmodule Pgpex.Primatives.SkipFileReader do
   }
   @type position :: {non_neg_integer(), non_neg_integer()}
 
-  @spec new(any(), non_neg_integer(), [position()]) :: Pgpex.Primatives.SkipFileReader.t()
+  @spec new(any(), non_neg_integer(), [position()]) :: Pgpex.Primitives.SkipFileReader.t()
   def new(f, _, positions) do
     {length, poses} = map_indexes(positions)
     %__MODULE__{
@@ -47,9 +47,9 @@ defmodule Pgpex.Primatives.SkipFileReader do
   end
 
   @impl true
-  @spec position(Pgpex.Primatives.SkipFileReader.t(), any()) ::
+  @spec position(Pgpex.Primitives.SkipFileReader.t(), any()) ::
           {:'error', atom()} |
-          {:ok, Pgpex.Primatives.SkipFileReader.t(), any()}
+          {:ok, Pgpex.Primitives.SkipFileReader.t(), any()}
   def position(%__MODULE__{position: p} = sfr, :cur) do
     {:ok, sfr, p}
   end

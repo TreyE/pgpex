@@ -1,4 +1,4 @@
-defmodule Pgpex.Primatives.MdcCalcState do
+defmodule Pgpex.Primitives.MdcCalcState do
   @sha_size 20
 
   defstruct [

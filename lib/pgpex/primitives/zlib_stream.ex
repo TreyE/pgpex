@@ -1,4 +1,4 @@
-defmodule Pgpex.Primatives.ZlibStream do
+defmodule Pgpex.Primitives.ZlibStream do
   defstruct [
     skip_file_reader: nil,
     length: 0,
@@ -87,7 +87,7 @@ defmodule Pgpex.Primatives.ZlibStream do
     :zlib.close(zl.z_instance)
     z_i = :zlib.open()
     :zlib.inflateInit(z_i)
-    {:ok, new_skr, _} = Pgpex.Primatives.SkipFileReader.position(zl.skip_file_reader, 0)
+    {:ok, new_skr, _} = Pgpex.Primitives.SkipFileReader.position(zl.skip_file_reader, 0)
     %__MODULE__{zl |
     z_instance: z_i,
     position: 0,
@@ -168,7 +168,7 @@ defmodule Pgpex.Primatives.ZlibStream do
   end
 
   defp pull_buffer(skr, z, current_buffer, buffer_start, buffer_length) do
-    case Pgpex.Primatives.SkipFileReader.binread(skr, 4096) do
+    case Pgpex.Primitives.SkipFileReader.binread(skr, 4096) do
       {:ok, new_skr, <<data::binary>>} ->
         case :zlib.safeInflate(z, data) do
           {:continue, [<<>>]} ->
@@ -204,7 +204,7 @@ defmodule Pgpex.Primatives.ZlibStream do
   end
 
   defp zlib_unfold_loop({:run_z, z, skr, current_data}) do
-    case Pgpex.Primatives.SkipFileReader.binread(skr, 4096) do
+    case Pgpex.Primitives.SkipFileReader.binread(skr, 4096) do
       {:ok, new_skr, <<data::binary>>} ->
         case :zlib.safeInflate(z, data) do
           {:continue, []} -> zlib_unfold_loop({:run_z, z, new_skr, current_data})

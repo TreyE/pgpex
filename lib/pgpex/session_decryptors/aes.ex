@@ -2,10 +2,10 @@ defmodule Pgpex.SessionDecryptors.Aes do
 
   use Bitwise
 
-  alias Pgpex.Primatives.MdcCalcState
-  alias Pgpex.Primatives.SkipFileReader
+  alias Pgpex.Primitives.MdcCalcState
+  alias Pgpex.Primitives.SkipFileReader
 
-  import Pgpex.Primatives.IOUtils
+  import Pgpex.Primitives.IOUtils
 
   def create_session_reader(f, key, length, positions) do
     sfr = SkipFileReader.new(f, length, positions)

@@ -20,7 +20,7 @@ defmodule Pgpex.Packets.LiteralData do
     file_name: nil
   ]
 
-  import Pgpex.Primatives.IOUtils
+  import Pgpex.Primitives.IOUtils
 
   @spec parse(
           any(),
@@ -32,7 +32,7 @@ defmodule Pgpex.Packets.LiteralData do
     with {file_start, data_length, data_positions} <- data_indexes(data_len, positions),
          {:ok, format} <- read_format(f, file_start),
          {:ok, file_name, date, lit_len, lit_pos} <- read_file_name_and_data_date(f, data_length, data_positions) do
-      skr = Pgpex.Primatives.SkipFileReader.new(f, lit_len, lit_pos)
+      skr = Pgpex.Primitives.SkipFileReader.new(f, lit_len, lit_pos)
       %__MODULE__{
         io: f,
         packet_length: packet_len,

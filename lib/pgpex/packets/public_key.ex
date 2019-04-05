@@ -99,8 +99,8 @@ defmodule Pgpex.Packets.PublicKey do
   end
 
   defp read_key_data(f, :rsa, _) do
-    with {:ok, m} <- Pgpex.Primatives.Mpi.read_mpi(f),
-         {:ok, e} <- Pgpex.Primatives.Mpi.read_mpi(f) do
+    with {:ok, m} <- Pgpex.Primitives.Mpi.read_mpi(f),
+         {:ok, e} <- Pgpex.Primitives.Mpi.read_mpi(f) do
       {:ok, create_rsa_public_key_record(m, e)}
     end
   end

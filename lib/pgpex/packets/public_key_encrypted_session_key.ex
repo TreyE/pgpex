@@ -46,7 +46,7 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKey do
   end
 
   defp read_encrypted_session_key({:rsa, _}, f) do
-    Pgpex.Primatives.Mpi.read_mpi_bytes(f)
+    Pgpex.Primitives.Mpi.read_mpi_bytes(f)
   end
 
   defp read_version_key_id_and_pk_algo(f) do

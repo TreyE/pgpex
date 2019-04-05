@@ -39,7 +39,7 @@ defmodule Pgpex.Packets.SecretKey do
     3 => {:rsa, :sign}
   }
 
-  import Pgpex.Primatives.IOUtils
+  import Pgpex.Primitives.IOUtils
 
   @spec parse(
           any(),
@@ -103,8 +103,8 @@ defmodule Pgpex.Packets.SecretKey do
   end
 
   defp read_key_data(f, :rsa, _) do
-    with {:ok, m} <- Pgpex.Primatives.Mpi.read_mpi(f),
-         {:ok, e} <- Pgpex.Primatives.Mpi.read_mpi(f),
+    with {:ok, m} <- Pgpex.Primitives.Mpi.read_mpi(f),
+         {:ok, e} <- Pgpex.Primitives.Mpi.read_mpi(f),
          {:ok, d, p, q, u} <- read_rsa_secret_key_data(f) do
       {:ok, create_rsa_private_key_record(m, e, d, p, q, u)}
     end
@@ -117,10 +117,10 @@ defmodule Pgpex.Packets.SecretKey do
   defp read_rsa_secret_key_data(f) do
     binread_match(f, 1, :read_secret_key_version_eof, :unsupported_secret_key_s2k) do
       <<0::big-unsigned-integer-size(8)>> ->
-        with {:ok, d} <- Pgpex.Primatives.Mpi.read_mpi(f),
-             {:ok, p} <- Pgpex.Primatives.Mpi.read_mpi(f),
-             {:ok, q} <- Pgpex.Primatives.Mpi.read_mpi(f),
-             {:ok, u} <- Pgpex.Primatives.Mpi.read_mpi(f) do
+        with {:ok, d} <- Pgpex.Primitives.Mpi.read_mpi(f),
+             {:ok, p} <- Pgpex.Primitives.Mpi.read_mpi(f),
+             {:ok, q} <- Pgpex.Primitives.Mpi.read_mpi(f),
+             {:ok, u} <- Pgpex.Primitives.Mpi.read_mpi(f) do
           {:ok, d, p, q, u}
         end
     end

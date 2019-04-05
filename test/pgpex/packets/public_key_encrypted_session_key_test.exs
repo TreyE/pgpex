@@ -47,7 +47,7 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKeyTest do
       Pgpex.Packet.parse_packet(f_reader_stream, pd)
     end)
     "mix.exs" = lit_packet.file_name
-    {:ok, _, "defmodule Pgpex.MixProject do"} = Pgpex.Primatives.SkipFileReader.binread(lit_packet.reader, 29)
+    {:ok, _, "defmodule Pgpex.MixProject do"} = Pgpex.Primitives.SkipFileReader.binread(lit_packet.reader, 29)
   end
 
   defp read_rsa_priv_key() do

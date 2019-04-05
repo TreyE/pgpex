@@ -1,5 +1,5 @@
-defmodule Pgpex.Primatives.Mpi do
-  import Pgpex.Primatives.IOUtils
+defmodule Pgpex.Primitives.Mpi do
+  import Pgpex.Primitives.IOUtils
 
   def read_mpi(f) do
     with ({:ok, mpi_len} <- read_mpi_size(f)) do
