@@ -45,6 +45,33 @@ defmodule Pgpex.Armor.B64StreamReader do
     end
   end
 
+  def verify_crc24(bsr, <<_::binary-size(4)>> = crc_as_b64) do
+    with({:ok, crc_val} <- Base.decode64(crc_as_b64)) do
+      verify_crc24(bsr, crc_val)
+    end
+  end
+
+  def verify_crc24(bsr, crc_val) do
+    register = Pgpex.Primitives.Crc24.init_register()
+    {:ok, crc_bsr, _} = position(bsr, 0)
+    with ({:ok, calced_crc} <- do_crc_register_loop(crc_bsr, register)) do
+      {:ok, out_crc, _} = position(crc_bsr, 0)
+      case calced_crc do
+        ^crc_val -> {:ok, out_crc}
+        _ -> {:error, {:invalid_crc, crc_val, calced_crc}}
+      end
+    end
+  end
+
+  defp do_crc_register_loop(bsr, reg) do
+    case read(bsr, 4096) do
+      {:error, e} -> {:crc_body_read_error, e}
+      :eof -> {:ok, reg}
+      {:ok, n_bsr, dat} ->
+        updated_reg = Pgpex.Primitives.Crc24.add(reg, dat)
+        do_crc_register_loop(n_bsr, updated_reg)
+    end
+  end
 
   defp find_line_breaks(f, pem_data_start, pem_data_end) do
     {:ok, new_pos} = :file.position(f, pem_data_start)

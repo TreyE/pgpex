@@ -7,11 +7,12 @@ defmodule Pgpex.Armor.ReaderTest do
     {:ok, f} = :file.open(f_name, [:read, :binary])
 
     entries = Enum.map(Pgpex.Armor.Reader.initialize(f), fn({:ok, {a,b,c}}) ->
+      {:ok, _} = Pgpex.Armor.B64StreamReader.verify_crc24(c, b)
       {:ok, new_reader} = Pgpex.Armor.B64StreamReader.reopen_as_new_file(c, f_name)
       {a, b, new_reader}
     end)
     :file.close(f)
-    Enum.map(entries, fn({_, _, c}) ->
+    Enum.map(entries, fn({_, crc, c}) ->
       :file.position(c, :bof)
       {:ok, result} = Pgpex.PacketReader.read_headers(c)
 

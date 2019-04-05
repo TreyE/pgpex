@@ -1,6 +1,6 @@
 # Missing Low Level Features
 
-1. CRC 24 Verification
+1. ~~CRC 24 Verification~~
 2. S2K based secret unlocking (currently only supports unencrypted Secrets)
 3. Reading of compression formats other than ZLIB
 
