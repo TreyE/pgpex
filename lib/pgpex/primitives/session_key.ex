@@ -3,6 +3,26 @@ defmodule Pgpex.Primitives.SessionKey do
     9 => :aes_256
   }
 
+  @session_key_syms %{
+    :aes_256 => 9
+  }
+
+  def encode_session_key(algo_sym, key_bytes) do
+    with ({:ok, algo_bytes} <- choose_algo_from_sym(algo_sym)) do
+      c_sum = byte_by_byte_checksum(key_bytes, 0)
+      {:ok, algo_bytes <> key_bytes <> <<c_sum::unsigned-big-integer-size(16)>>}
+    end
+  end
+
+  defp choose_algo_from_sym(algo_sym) do
+    case Map.has_key?(@session_key_syms, algo_sym) do
+      true ->
+        key_byte = Map.fetch!(@session_key_syms, algo_sym)
+        {:ok, <<key_byte::unsigned-big-integer-size(8)>>}
+      false -> {:error, {:invalid_session_key_algo, algo_sym}}
+    end
+  end
+
   def decode_session_key(data) when is_binary(data) do
     <<algo::integer-unsigned-big-size(8),rest::binary>> = data
     <<checksum::big-integer-unsigned-size(16)>> = :binary.part(rest, byte_size(rest) - 2, 2)

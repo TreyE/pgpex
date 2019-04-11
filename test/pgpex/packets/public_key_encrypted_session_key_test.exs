@@ -21,9 +21,11 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKeyTest do
       end)
     end)
     [first_message|_] = parsed_files
-    [%Pgpex.Packets.PublicKeyEncryptedSessionKey{key_kind: {:rsa, :both}, encrypted_session_key: packet_data},op] = first_message
-    priv_key = read_rsa_priv_key()
-    decrypted_session_key = :public_key.decrypt_private(packet_data, priv_key, [{:rsa_padding, :rsa_no_padding}])
+    [%Pgpex.Packets.PublicKeyEncryptedSessionKey{} = skp,op] = first_message
+    key_provider = fn(_,_) ->
+      {:ok, [read_rsa_priv_key()]}
+    end
+    {:ok, [decrypted_session_key]} = Pgpex.Packets.PublicKeyEncryptedSessionKey.decrypt_session_key(skp, key_provider)
     {:ok, :aes_256, key} = (Pgpex.Primitives.SessionKey.decode_session_key(decrypted_session_key))
     [{ds, _}|_] = op.data_indexes
     :ok = Pgpex.SessionDecryptors.Aes.read_and_verify_first_block(op.io, ds, key)

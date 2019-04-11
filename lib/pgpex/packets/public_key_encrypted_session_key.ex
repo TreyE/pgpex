@@ -2,7 +2,7 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKey do
   @type t :: %__MODULE__{
     version: 3,
     key_id: binary(),
-    key_kind: {:rsa, :sign | :encrypt | :both},
+    key_kind: key_kind(),
     encrypted_session_key: binary()
   }
   @type key_kind :: {:rsa, :both} | {:rsa, :encrypt} | {:rsa, :sign}
@@ -12,6 +12,8 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKey do
     2 => {:rsa, :encrypt},
     3 => {:rsa, :sign}
   }
+
+  @type key_provider :: (key_kind(), binary() -> {:error, any()} | {:ok, term()} | {:ok, [term()]} )
 
   defstruct [
     version: 3,
@@ -42,6 +44,30 @@ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKey do
         key_kind: key_kind,
         encrypted_session_key: encrypted_session_key
       }
+    end
+  end
+
+  @spec decrypt_session_key(t(), key_provider()) :: {:ok, binary()} | {:ok, [binary]} | {:error, any()}
+  def decrypt_session_key(%__MODULE__{key_kind: k_kind,key_id: k_id, encrypted_session_key: esk}, key_provider) do
+    case key_provider.(k_kind, k_id) do
+      {:ok, keys} when is_list(keys) -> try_decrypt_list(k_id, k_kind, keys, esk)
+      {:ok, key} -> Pgpex.SessionKeyDecryptor.decrypt_session_key(k_kind, key, esk)
+      {:error, e} -> {:error, {:no_matching_key, k_kind, k_id, e}}
+    end
+  end
+
+  defp try_decrypt_list(k_id, _, [], _) do
+    {:error, {:no_matching_key, k_id}}
+  end
+
+  defp try_decrypt_list(k_id, k_kind, keys, esk) do
+    k_results = Enum.map(keys, fn(k) ->
+      Pgpex.SessionKeyDecryptor.decrypt_session_key(k_kind, k, esk)
+    end)
+    k_oks = Enum.filter(k_results, fn({:ok, _}) -> true end)
+    case Enum.any?(k_oks) do
+      false -> {:error, {:no_matching_key, k_id}}
+      _ -> {:ok, Enum.map(k_oks, fn({:ok, v}) -> v end)}
     end
   end
 
