@@ -6,13 +6,6 @@ defmodule Pgpex.PacketWriters.PublicKeyEncryptedSessionKey do
     3 => {:rsa, :sign}
   }
 
-  defstruct [
-    version: 3,
-    key_id: nil,
-    key_kind: {:rsa, :both},
-    encrypted_session_key: nil
-  ]
-
   def construct_packet(pk_algo_identifier, p_key, sym_algo_id, key_bytes, key_id) do
     with ({:ok, esk} <- encrypt_session_key(pk_algo_identifier, p_key, sym_algo_id, key_bytes)) do
       packet_data = <<3::big-unsigned-integer-size(8)>> <> key_id <> <<2::big-unsigned-integer-size(8)>> <> esk

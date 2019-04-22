@@ -26,7 +26,7 @@ defmodule Pgpex.Primitives.Behaviours.ReadableFile do
       {:file_request, from, reply_ref, {:position, p}} ->
         handle_position_request(mod, from, reply_ref, skr, p)
       {:file_request, from, reply_ref, :close} ->
-        send(from, {:file_reply,reply_ref, mod.close(skr.io)})
+        send(from, {:file_reply,reply_ref, mod.close(skr)})
       a ->
         IO.inspect(a)
         loop(mod, skr)

@@ -6,6 +6,13 @@ defmodule Pgpex.PacketWriters.WriterUtils do
     <<first_byte::big-unsigned-integer-size(8)>> <> encode_new_format_len(length)
   end
 
+  def encode_tagged_eof(tag) do
+    <<1::big-unsigned-integer-size(1),
+      0::big-unsigned-integer-size(1),
+      tag::big-unsigned-integer-size(4),
+      3::big-unsigned-integer-size(2)>>
+  end
+
   defp encode_new_format_len(l) when l < 192 do
     <<l::big-unsigned-integer-size(8)>>
   end
