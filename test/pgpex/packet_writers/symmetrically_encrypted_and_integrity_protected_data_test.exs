@@ -22,8 +22,7 @@ defmodule Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedDataTes
     """
     w_1 = Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedData.initialize(
       {:aes, key_bytes},
-      written_message_file,
-      byte_size(the_test_string)
+      written_message_file
     )
     w_2 = Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedData.write(
       w_1,

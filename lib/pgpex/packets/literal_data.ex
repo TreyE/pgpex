@@ -87,8 +87,6 @@ defmodule Pgpex.Packets.LiteralData do
     end
   end
 
-
-
   defp data_indexes(length, {s_pos, e_pos}) do
     {s_pos, length - 1, [{s_pos + 1, e_pos}]}
   end

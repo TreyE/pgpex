@@ -6,7 +6,8 @@ defmodule Pgpex.Primitives.ZlibStream do
     buffer: <<>>,
     buffer_start: 0,
     buffer_length: 0,
-    z_instance: nil
+    z_instance: nil,
+    z_has_more: false
   ]
 
   @behaviour Pgpex.Primitives.Behaviours.ReadableFile
@@ -102,12 +103,13 @@ defmodule Pgpex.Primitives.ZlibStream do
   end
 
   defp pull_until_started(%__MODULE__{} = zl, pos) do
-    {new_skr, z, new_buff, buffer_start, buffer_length} =  pull_buffer(
+    {new_skr, z, new_buff, buffer_start, buffer_length, b_more} =  pull_buffer(
       zl.skip_file_reader,
       zl.z_instance,
       zl.buffer,
       zl.buffer_start,
-      zl.buffer_length
+      zl.buffer_length,
+      zl.z_has_more
     )
     case buffer_has(buffer_start, buffer_length, pos) do
       false ->
@@ -117,7 +119,8 @@ defmodule Pgpex.Primitives.ZlibStream do
             skip_file_reader: new_skr,
             buffer: <<>>,
             buffer_start: buffer_start + buffer_length,
-            buffer_length: 0
+            buffer_length: 0,
+            z_has_more: b_more
           },
           pos
         )
@@ -127,7 +130,8 @@ defmodule Pgpex.Primitives.ZlibStream do
             skip_file_reader: new_skr,
             buffer: new_buff,
             buffer_start: buffer_start,
-            buffer_length: buffer_length
+            buffer_length: buffer_length,
+            z_has_more: b_more
         }
     end
   end
@@ -137,12 +141,13 @@ defmodule Pgpex.Primitives.ZlibStream do
   end
 
   defp pull_until_ended(%__MODULE__{} = zl, pos) do
-    {new_skr, z, new_buff, buffer_start, buffer_length} =  pull_buffer(
+    {new_skr, z, new_buff, buffer_start, buffer_length, b_more} =  pull_buffer(
       zl.skip_file_reader,
       zl.z_instance,
       zl.buffer,
       zl.buffer_start,
-      zl.buffer_length
+      zl.buffer_length,
+      zl.z_has_more
     )
     case buffer_has(buffer_start, buffer_length, pos) do
       false ->
@@ -152,7 +157,8 @@ defmodule Pgpex.Primitives.ZlibStream do
             skip_file_reader: new_skr,
             buffer: new_buff,
             buffer_start: buffer_start,
-            buffer_length: buffer_length
+            buffer_length: buffer_length,
+            z_has_more: b_more
           },
           pos
         )
@@ -162,23 +168,37 @@ defmodule Pgpex.Primitives.ZlibStream do
             skip_file_reader: new_skr,
             buffer: new_buff,
             buffer_start: buffer_start,
-            buffer_length: buffer_length
+            buffer_length: buffer_length,
+            z_has_more: b_more
         }
     end
   end
 
-  defp pull_buffer(skr, z, current_buffer, buffer_start, buffer_length) do
+  defp pull_buffer(skr, z, current_buffer, buffer_start, buffer_length, true) do
+    case :zlib.safeInflate(z, []) do
+      {:continue, [<<>>]} ->
+        pull_buffer(skr, z, current_buffer, buffer_start, buffer_length, true)
+      {:continue, [c_output]} ->
+        {skr, z, current_buffer <> c_output, buffer_start, buffer_length + byte_size(c_output), true}
+      {:finished, [output]} ->
+        {skr, z, current_buffer <> output, buffer_start, buffer_length + byte_size(output), false}
+      {:finished, []} ->
+        pull_buffer(skr, z, current_buffer, buffer_start, buffer_length, false)
+    end
+  end
+
+  defp pull_buffer(skr, z, current_buffer, buffer_start, buffer_length, false) do
     case Pgpex.Primitives.SkipFileReader.binread(skr, 4096) do
       {:ok, new_skr, <<data::binary>>} ->
         case :zlib.safeInflate(z, data) do
           {:continue, [<<>>]} ->
-            pull_buffer(new_skr, z, current_buffer, buffer_start, buffer_length)
+            pull_buffer(new_skr, z, current_buffer, buffer_start, buffer_length, true)
           {:continue, [c_output]} ->
-            {new_skr, z, current_buffer <> c_output, buffer_start, buffer_length + byte_size(c_output)}
+            {new_skr, z, current_buffer <> c_output, buffer_start, buffer_length + byte_size(c_output), true}
           {:finished, [output]} ->
-            {new_skr, z, current_buffer <> output, buffer_start, buffer_length + byte_size(output)}
+            {new_skr, z, current_buffer <> output, buffer_start, buffer_length + byte_size(output), false}
           {:finished, []} ->
-            pull_buffer(new_skr, z, current_buffer, buffer_start, buffer_length)
+            pull_buffer(new_skr, z, current_buffer, buffer_start, buffer_length, false)
         end
       :eof -> {skr, z, current_buffer, buffer_start, buffer_length}
       a -> {:error, a}
@@ -187,7 +207,7 @@ defmodule Pgpex.Primitives.ZlibStream do
 
   defp read_length(reader) do
     :ok = :zlib.inflateInit(reader.z_instance)
-    stream = Stream.unfold({:run_z, reader.z_instance, reader.skip_file_reader, <<>>}, fn(acc) ->
+    stream = Stream.unfold({:run_z, reader.z_instance, reader.skip_file_reader, <<>>, false}, fn(acc) ->
       zlib_unfold_loop(acc)
     end)
     total_length = Enum.reduce(stream, 0, fn(e, acc) ->
@@ -203,14 +223,23 @@ defmodule Pgpex.Primitives.ZlibStream do
     {:ok, read_length(new_zl)}
   end
 
-  defp zlib_unfold_loop({:run_z, z, skr, current_data}) do
+  defp zlib_unfold_loop({:run_z, z, skr, current_data, true}) do
+    case :zlib.safeInflate(z, []) do
+      {:continue, []} -> zlib_unfold_loop({:run_z, z, skr, current_data, true})
+      {:continue, [c_output]} -> {current_data <> c_output, {:run_z, z, skr, <<>>, true}}
+      {:finished, [output]} -> {current_data <> output, {:run_z, z, skr, <<>>, false}}
+      {:finished, []} -> zlib_unfold_loop({:run_z, z, skr, current_data, false})
+    end
+  end
+
+  defp zlib_unfold_loop({:run_z, z, skr, current_data, false}) do
     case Pgpex.Primitives.SkipFileReader.binread(skr, 4096) do
       {:ok, new_skr, <<data::binary>>} ->
         case :zlib.safeInflate(z, data) do
-          {:continue, []} -> zlib_unfold_loop({:run_z, z, new_skr, current_data})
-          {:continue, [c_output]} -> {current_data <> c_output, {:run_z, z, new_skr, <<>>}}
-          {:finished, [output]} -> {current_data <> output, {:run_z, z, new_skr, <<>>}}
-          {:finished, []} -> zlib_unfold_loop({:run_z, z, new_skr, current_data})
+          {:continue, []} -> zlib_unfold_loop({:run_z, z, new_skr, current_data, true})
+          {:continue, [c_output]} -> {current_data <> c_output, {:run_z, z, new_skr, <<>>, true}}
+          {:finished, [output]} -> {current_data <> output, {:run_z, z, new_skr, <<>>, false}}
+          {:finished, []} -> zlib_unfold_loop({:run_z, z, new_skr, current_data, false})
         end
       :eof ->
         {current_data, :stop}

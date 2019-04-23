@@ -139,7 +139,13 @@ defmodule Pgpex.PacketReaderTest do
       Pgpex.Packet.parse_packet(f_reader_stream, pd)
     end)
     "all_code" = lit_packet.file_name
-    {:ok, _, "diff --git a/.formatter.exs b"} = Pgpex.Primitives.SkipFileReader.binread(lit_packet.reader, 29)
+    reader = Pgpex.Primitives.SkipFileReader.wrap_as_file(lit_packet.reader)
+    read_data = IO.binread(reader, :all)
+    # mine = Pgpex.Primitives.SkipFileReader.binread(lit_packet.reader, :all)
+    {:ok, ac_file} = :file.open("all_code", [:read, :binary])
+    value = IO.binread(ac_file, :all)
+    ^read_data = value
+    :file.close(ac_file)
   end
 
   defp read_rsa_priv_key() do

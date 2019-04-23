@@ -1,0 +1,2876 @@
+diff --git a/TODO.md b/TODO.md
+new file mode 100644
+index 0000000..521b084
+--- /dev/null
++++ b/TODO.md
+@@ -0,0 +1,17 @@
++# Missing Low Level Features
++
++1. ~~CRC 24 Verification~~
++2. S2K based secret unlocking (currently only supports unencrypted Secrets)
++
++# Major Features
++
++1. **Encrypted Payload Creation**
++2. Signature Verification
++3. Signature Creation
++
++# Optional Feature Support
++
++1. CAST5 encryption/decryption
++2. Payload Compression Defaults
++3. Key Registry
++4. Reading of compression formats other than ZLIB
+\ No newline at end of file
+diff --git a/lib/pgpex/armor/b64_stream_reader.ex b/lib/pgpex/armor/b64_stream_reader.ex
+index d48400e..0178158 100644
+--- a/lib/pgpex/armor/b64_stream_reader.ex
++++ b/lib/pgpex/armor/b64_stream_reader.ex
+@@ -45,6 +45,33 @@ defmodule Pgpex.Armor.B64StreamReader do
+     end
+   end
+ 
++  def verify_crc24(bsr, <<_::binary-size(4)>> = crc_as_b64) do
++    with({:ok, crc_val} <- Base.decode64(crc_as_b64)) do
++      verify_crc24(bsr, crc_val)
++    end
++  end
++
++  def verify_crc24(bsr, crc_val) do
++    register = Pgpex.Primitives.Crc24.init_register()
++    {:ok, crc_bsr, _} = position(bsr, 0)
++    with ({:ok, calced_crc} <- do_crc_register_loop(crc_bsr, register)) do
++      {:ok, out_crc, _} = position(crc_bsr, 0)
++      case calced_crc do
++        ^crc_val -> {:ok, out_crc}
++        _ -> {:error, {:invalid_crc, crc_val, calced_crc}}
++      end
++    end
++  end
++
++  defp do_crc_register_loop(bsr, reg) do
++    case read(bsr, 4096) do
++      {:error, e} -> {:crc_body_read_error, e}
++      :eof -> {:ok, reg}
++      {:ok, n_bsr, dat} ->
++        updated_reg = Pgpex.Primitives.Crc24.add(reg, dat)
++        do_crc_register_loop(n_bsr, updated_reg)
++    end
++  end
+ 
+   defp find_line_breaks(f, pem_data_start, pem_data_end) do
+     {:ok, new_pos} = :file.position(f, pem_data_start)
+@@ -90,6 +117,7 @@ defmodule Pgpex.Armor.B64StreamReader do
+     end
+   end
+ 
++  @dialyzer({:unmatched_returns, {:missing_final_byte_count, 5}})
+   defp missing_final_byte_count(f, data_start, b64_len, skip_start, skip_size) do
+     last_data_index = data_start + map_pos(b64_len - 2, skip_start, skip_size)
+     :file.position(f, {:bof, last_data_index})
+@@ -121,8 +149,8 @@ defmodule Pgpex.Armor.B64StreamReader do
+     {:err, :badarg}
+   end
+ 
+-  def position(%__MODULE__{} = stream, :eof) do
+-    {:ok, %__MODULE__{stream | byte_pos: :eof}, :eof}
++  def position(%__MODULE__{octet_length: ol} = stream, :eof) do
++    {:ok, %__MODULE__{stream | byte_pos: ol}, ol}
+   end
+ 
+   def position(%__MODULE__{} = stream, :bof) do
+@@ -133,19 +161,15 @@ defmodule Pgpex.Armor.B64StreamReader do
+     {:ok, stream, bp}
+   end
+ 
+-  def position(%__MODULE__{octet_length: ol, byte_pos: bp} = stream, :cur) when bp == ol do
+-    {:ok, %__MODULE__{stream| byte_pos: :eof}, :eof}
+-  end
+-
+-  def position(%__MODULE__{octet_length: ol} = stream, index) when index >= 0  and index == ol do
+-    {:ok, %__MODULE__{stream| byte_pos: :eof}, ol}
++  def position(%__MODULE__{octet_length: ol, byte_pos: bp} = stream, :cur) when bp <= ol do
++    {:ok, %__MODULE__{stream| byte_pos: ol}, ol}
+   end
+ 
+   def position(%__MODULE__{octet_length: ol}, index) when index >= 0  and index > ol do
+     {:err, :badarg}
+   end
+ 
+-  def position(%__MODULE__{octet_length: ol} = stream, index) when index >= 0  and index < ol do
++  def position(%__MODULE__{octet_length: ol} = stream, index) when index >= 0  and index <= ol do
+     {:ok, %__MODULE__{stream | byte_pos: index}, index}
+   end
+ 
+@@ -161,7 +185,7 @@ defmodule Pgpex.Armor.B64StreamReader do
+     suggested_end = (stream.byte_pos + read_size - 1)
+     {byte_end, new_pos} = case (suggested_end >= (stream.octet_length - 1)) do
+                  false -> { suggested_end, suggested_end + 1 }
+-                 _ -> {stream.octet_length - 1, :eof}
++                 _ -> {stream.octet_length - 1, stream.octet_length}
+                end
+     {start_tritet, bin_offset} = map_tritet_for_byte(stream.byte_pos)
+     {end_tritet, end_bin_offset} = map_tritet_for_byte(byte_end)
+diff --git a/lib/pgpex/packet.ex b/lib/pgpex/packet.ex
+new file mode 100644
+index 0000000..4896611
+--- /dev/null
++++ b/lib/pgpex/packet.ex
+@@ -0,0 +1,70 @@
++defmodule Pgpex.Packet do
++  @type packet ::
++    Pgpex.Packets.CompressedData.t() |
++    Pgpex.Packets.LiteralData.t() |
++    Pgpex.Packets.PublicKey.t() |
++    Pgpex.Packets.PublicKeyEncryptedSessionKey.t() |
++    Pgpex.Packets.SecretKey.t() |
++    Pgpex.Packets.SymmetricallyEncryptedAndIntegrityProtectedData.t()
++
++  @spec parse_packet(
++    any(),
++    Pgpex.PacketHeader.t()
++    ) ::
++      packet() |
++      Pgpex.PacketHeader.t() |
++      {:error, any()}
++  def parse_packet(f, %Pgpex.PacketHeader{tag: :literal_data} = d) do
++    Pgpex.Packets.LiteralData.parse(f, d)
++  end
++
++  def parse_packet(f, %Pgpex.PacketHeader{tag: :compressed_data} = d) do
++    Pgpex.Packets.CompressedData.parse(f, d)
++  end
++
++  def parse_packet(f, %Pgpex.PacketHeader{tag: :symmetrically_encrypted_and_integrity_protected_data} = d) do
++    Pgpex.Packets.SymmetricallyEncryptedAndIntegrityProtectedData.parse(f, d)
++  end
++
++  def parse_packet(f, %Pgpex.PacketHeader{tag: :public_key_encrypted_session_key} = d) do
++    Pgpex.Packets.PublicKeyEncryptedSessionKey.parse(f, d)
++  end
++
++  def parse_packet(f, %Pgpex.PacketHeader{tag: :public_key} = d) do
++    Pgpex.Packets.PublicKey.parse(f, d)
++  end
++
++  def parse_packet(f, %Pgpex.PacketHeader{tag: :public_subkey} = d) do
++    Pgpex.Packets.PublicKey.parse(f, d)
++  end
++
++  def parse_packet(f, %Pgpex.PacketHeader{tag: :secret_key} = d) do
++    Pgpex.Packets.SecretKey.parse(f, d)
++  end
++
++  def parse_packet(f, %Pgpex.PacketHeader{tag: :secret_subkey} = d) do
++    Pgpex.Packets.SecretKey.parse(f, d)
++  end
++
++  def parse_packet(_, %Pgpex.PacketHeader{tag: {:invalid, _}} = header) do
++    header
++  end
++
++  Enum.map(
++    [:reserved,
++    :signature,
++    :symmetric_key_encrypted_session,
++    :one_pass_signature,
++    :symmetrically_encrypted_data,
++    :marker,
++    :trust,
++    :user_id,
++    :user_attribute,
++    :modification_detection_code,
++    :private_or_experimental],
++    fn(item) ->
++      def parse_packet(_, %Pgpex.PacketHeader{tag: unquote(item)} = header) do
++        header
++      end
++  end)
++end
+diff --git a/lib/pgpex/packet_header.ex b/lib/pgpex/packet_header.ex
+new file mode 100644
+index 0000000..a180cc4
+--- /dev/null
++++ b/lib/pgpex/packet_header.ex
+@@ -0,0 +1,68 @@
++defmodule Pgpex.PacketHeader do
++  @packet_types %{
++    0 => :reserved,
++    1 => :public_key_encrypted_session_key,
++    2 => :signature,
++    3 => :symmetric_key_encrypted_session,
++    4 => :one_pass_signature,
++    5 => :secret_key,
++    6 => :public_key,
++    7 => :secret_subkey,
++    8 => :compressed_data,
++    9 => :symmetrically_encrypted_data,
++    10 => :marker,
++    11 => :literal_data,
++    12 => :trust,
++    13 => :user_id,
++    14 => :public_subkey,
++    17 => :user_attribute,
++    18 => :symmetrically_encrypted_and_integrity_protected_data,
++    19 => :modification_detection_code,
++    60 => :private_or_experimental,
++    61 => :private_or_experimental,
++    62 => :private_or_experimental,
++    63 => :private_or_experimental
++  }
++
++  @type packet_header_types :: unquote(Enum.reduce(Enum.uniq(Map.values(@packet_types)), (
++    quote do
++     {:invalid, any()}
++    end
++    ), fn(ele, acc) ->
++      quote do
++        unquote(acc) | unquote(ele)
++      end
++    end))
++
++  @type indexes :: pos() | [pos()]
++  @type pos :: {non_neg_integer(), non_neg_integer()}
++
++  @type t(val) :: %__MODULE__{
++    tag: val,
++    packet_length: non_neg_integer(),
++    data_length: non_neg_integer(),
++    packet_locations: indexes(),
++    data_locations: indexes()
++  }
++
++  @type t :: t(packet_header_types())
++
++  defstruct [
++    tag: nil,
++    packet_length: 0,
++    data_length: 0,
++    packet_locations: nil,
++    data_locations: nil
++  ]
++
++  @spec new(non_neg_integer(),non_neg_integer(),pos(),non_neg_integer(),pos()) :: t()
++  def new(t, pl, p_locs, dl, d_locs) do
++    %__MODULE__{
++      tag: Map.get(@packet_types, t, {:invalid, t}),
++      packet_length: pl,
++      packet_locations: p_locs,
++      data_length: dl,
++      data_locations: d_locs
++    }
++  end
++end
+diff --git a/lib/pgpex/packet_reader.ex b/lib/pgpex/packet_reader.ex
+index ff1e3e2..37f2ba5 100644
+--- a/lib/pgpex/packet_reader.ex
++++ b/lib/pgpex/packet_reader.ex
+@@ -1,31 +1,8 @@
+ defmodule Pgpex.PacketReader do
+   require Bitwise
+ 
+-  @packet_types %{
+-    0 => :reserved,
+-    1 => :public_key_encrypted_session_key,
+-    2 => :signature,
+-    3 => :symmetric_key_encrypted_session,
+-    4 => :one_pass_signature,
+-    5 => :secret_key,
+-    6 => :public_key,
+-    7 => :secret_subkey,
+-    8 => :compressed_data,
+-    9 => :symmetrically_encrypted_data,
+-    10 => :market,
+-    11 => :literal_data,
+-    12 => :trust,
+-    13 => :user_id,
+-    14 => :public_subkey,
+-    17 => :user_attribute,
+-    18 => :symmetrically_encrypted_and_integrity_protected_data,
+-    19 => :modification_detection_code,
+-    60 => :private_or_experimental,
+-    61 => :private_or_experimental,
+-    62 => :private_or_experimental,
+-    63 => :private_or_experimental
+-  }
+-
++  @spec read_headers(any()) ::
++          {:error, atom()} | {:ok, [Pgpex.PacketHeader.t()]}
+   def read_headers(f) do
+     read_headers(f,[])
+   end
+@@ -38,34 +15,10 @@ defmodule Pgpex.PacketReader do
+     end
+   end
+ 
+-  def parse_packet(f, {:public_key_encrypted_session_key, packet_len, packet_indexes, data_len, data_indexes} = d) do
+-    Pgpex.Packets.PublicKeyEncryptedSessionKey.parse(f, d)
+-  end
+-
+-  def parse_packet(f, {:public_key, packet_len, packet_indexes, data_len, data_indexes} = d) do
+-    Pgpex.Packets.PublicKey.parse(f, d)
+-  end
+-
+-  def parse_packet(f, {:public_subkey, packet_len, packet_indexes, data_len, data_indexes} = d) do
+-    Pgpex.Packets.PublicKey.parse(f, d)
+-  end
+-
+-  def parse_packet(f, {:secret_key, packet_len, packet_indexes, data_len, data_indexes} = d) do
+-    Pgpex.Packets.SecretKey.parse(f, d)
+-  end
+-
+-  def parse_packet(f, {:secret_subkey, packet_len, packet_indexes, data_len, data_indexes} = d) do
+-    Pgpex.Packets.SecretKey.parse(f, d)
+-  end
+-
+-  def parse_packet(_, header) do
+-    header
+-  end
+-
+   def read_packet_header(f) do
+     with {:ok, start_loc} <- :file.position(f, :cur),
+          {tag, len} <- read_tag_and_length(f) do
+-      get_body_indexes_and_skip_to_next(f, start_loc, {set_tag_type(tag), len})
++      get_body_indexes_and_skip_to_next(f, start_loc, {tag, len})
+     end
+   end
+ 
+@@ -78,19 +31,44 @@ defmodule Pgpex.PacketReader do
+     end
+   end
+ 
+-  def get_body_indexes_and_skip_to_next(f, start_loc, {tag, {:partial, len_so_far}}) do
++  defp get_body_indexes_and_skip_to_next(f, start_loc, {tag, {:partial, len_so_far}}) do
+     with ({:ok, data_start_pos} <- :file.position(f, :cur)) do
+        {:ok, end_loc} = :file.position(f, data_start_pos + len_so_far)
+        {total_len, p_indexes} = extract_part_indexes(f, len_so_far, [{data_start_pos, end_loc - 1}])
+        {:ok, last_loc} = :file.position(f, :cur)
+-       {tag, (last_loc - start_loc), {start_loc, last_loc - 1}, total_len, p_indexes}
++       Pgpex.PacketHeader.new(
++         tag,
++         (last_loc - start_loc),
++         {start_loc, last_loc - 1},
++         total_len,
++         p_indexes
++       )
++    end
++  end
++
++  defp get_body_indexes_and_skip_to_next(f, start_loc, {tag, :eof}) do
++    with ({:ok, data_start_pos} <- :file.position(f, :cur)) do
++       {:ok, end_pos} = :file.position(f, :eof)
++       Pgpex.PacketHeader.new(
++         tag,
++         end_pos - start_loc,
++         {start_loc, end_pos - 1},
++         end_pos - data_start_pos,
++         {data_start_pos, end_pos - 1}
++       )
+     end
+   end
+ 
+-  def get_body_indexes_and_skip_to_next(f, start_loc, {tag, len}) do
++  defp get_body_indexes_and_skip_to_next(f, start_loc, {tag, len}) do
+     with ({:ok, data_start_pos} <- :file.position(f, :cur)) do
+        {:ok, end_pos} = :file.position(f, data_start_pos + len)
+-       {tag, end_pos - start_loc, {start_loc, data_start_pos + len - 1}, len, {data_start_pos, data_start_pos + len - 1}}
++       Pgpex.PacketHeader.new(
++         tag,
++         end_pos - start_loc,
++         {start_loc, data_start_pos + len - 1},
++         len,
++         {data_start_pos, data_start_pos + len - 1}
++       )
+     end
+   end
+ 
+@@ -100,17 +78,17 @@ defmodule Pgpex.PacketReader do
+         {"fake_tag", {:partial, new_read_len}} ->
+           {:ok, the_pos} = :file.position(f, :cur)
+           {:ok, end_pos} = :file.position(f, the_pos + new_read_len)
+-          extract_part_indexes(f, len_so_far + (end_pos - s_pos), [{the_pos, end_pos - 1}|p_indexes])
++          extract_part_indexes(f, len_so_far + new_read_len, [{the_pos, end_pos - 1}|p_indexes])
+         {"fake_tag", n} ->
+           {:ok, the_pos} = :file.position(f, :cur)
+           {:ok, end_pos} = :file.position(f, the_pos + n)
+-          {len_so_far + (end_pos - s_pos), Enum.reverse([{the_pos,end_pos - 1}|p_indexes])}
++          {len_so_far + n, Enum.reverse([{the_pos,end_pos - 1}|p_indexes])}
+       end
+     end
+   end
+ 
+-  defp set_tag_type(tag_val) do
+-    Map.get(@packet_types, tag_val, {:invalid, tag_val})
++  defp get_old_format_length(_, tag, :unknown) do
++    {tag, :eof}
+   end
+ 
+   defp get_old_format_length(f, tag, byte_count) do
+diff --git a/lib/pgpex/packet_writers/public_key_encrypted_session_key.ex b/lib/pgpex/packet_writers/public_key_encrypted_session_key.ex
+new file mode 100644
+index 0000000..60c4e6d
+--- /dev/null
++++ b/lib/pgpex/packet_writers/public_key_encrypted_session_key.ex
+@@ -0,0 +1,23 @@
++defmodule Pgpex.PacketWriters.PublicKeyEncryptedSessionKey do
++
++  @pk_algo_identifiers %{
++    1 => {:rsa, :both},
++    2 => {:rsa, :encrypt},
++    3 => {:rsa, :sign}
++  }
++
++  def construct_packet(pk_algo_identifier, p_key, sym_algo_id, key_bytes, key_id) do
++    with ({:ok, esk} <- encrypt_session_key(pk_algo_identifier, p_key, sym_algo_id, key_bytes)) do
++      packet_data = <<3::big-unsigned-integer-size(8)>> <> key_id <> <<2::big-unsigned-integer-size(8)>> <> esk
++      tag_and_len = Pgpex.PacketWriters.WriterUtils.write_new_format_length_and_tag(1, byte_size(packet_data))
++      {:ok, tag_and_len <> packet_data}
++    end
++  end
++  def encrypt_session_key(pk_algo_identifier, p_key, sym_algo_id, key_bytes) when is_binary(key_bytes) do
++    with {:ok, sk_encoded} <- Pgpex.Primitives.SessionKey.encode_session_key(sym_algo_id, key_bytes),
++         {:ok, encrypted_key} <- Pgpex.SessionKeyEncryptor.encrypt_session_key(pk_algo_identifier,p_key,sk_encoded) do
++      {:ok, Pgpex.Primitives.Mpi.encode_mpi(encrypted_key)}
++    end
++  end
++
++end
+diff --git a/lib/pgpex/packet_writers/symmetrically_encrypted_and_integrity_protected_data.ex b/lib/pgpex/packet_writers/symmetrically_encrypted_and_integrity_protected_data.ex
+new file mode 100644
+index 0000000..fcd5d91
+--- /dev/null
++++ b/lib/pgpex/packet_writers/symmetrically_encrypted_and_integrity_protected_data.ex
+@@ -0,0 +1,69 @@
++defmodule Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedData do
++  defstruct [
++    io: nil,
++    session_key: nil,
++    encrypt_params: nil,
++    hash_status: nil,
++    write_buffer: <<1::big-integer-unsigned-size(8)>>,
++    buffer: <<>>,
++    current_iv: <<>>,
++    encryptor: nil,
++    finalizer: nil
++  ]
++
++  def initialize({:aes, key}, f, data_len) do
++    {first_block, data_prefix, h_update, encryptor, finalizer} = Pgpex.SessionEncryptors.Aes.init_for(key)
++    tag = Pgpex.PacketWriters.WriterUtils.new_format_tag(18)
++    IO.binwrite(f, tag)
++    %__MODULE__{
++      io: f,
++      hash_status: h_update,
++      current_iv: first_block,
++      buffer: data_prefix,
++      encryptor: encryptor,
++      finalizer: finalizer,
++      session_key: key,
++      write_buffer: (<<1::big-integer-unsigned-size(8)>> <> first_block)
++    }
++  end
++
++  def write(%__MODULE__{} = w, new_data) do
++    updated_hash = :crypto.hash_update(w.hash_status, new_data)
++    {new_iv, new_buff, to_write} = w.encryptor.(w.buffer, new_data, w.current_iv, w.session_key)
++    new_full_buff = w.write_buffer <> to_write
++    remaining_buff = chomp_me(new_full_buff, w.io)
++    %__MODULE__{
++      w |
++        current_iv: new_iv,
++        buffer: new_buff,
++        hash_status: updated_hash,
++        write_buffer: remaining_buff
++    }
++  end
++
++  defp chomp_me(<<eatable::binary-size(512), rest::binary>>, f) do
++    IO.binwrite(
++      f,
++      Pgpex.PacketWriters.WriterUtils.encode_new_format_varlen(byte_size(eatable))
++    )
++    IO.binwrite(
++      f,
++      eatable
++    )
++    chomp_me(rest, f)
++  end
++
++  defp chomp_me(<<left::binary>>, _) do
++    left
++  end
++
++  def finalize(%__MODULE__{} = w_before_mdc_bytes) do
++    w = write(
++      w_before_mdc_bytes,
++      <<0xD3::big-unsigned-integer-size(8), 0x14::big-unsigned-integer-size(8)>>
++    )
++    last_bytes = w.finalizer.(w.buffer, w.hash_status, w.current_iv, w.session_key)
++    IO.binwrite(w.io, Pgpex.PacketWriters.WriterUtils.encode_new_format_len(byte_size(last_bytes)))
++    IO.binwrite(w.io, last_bytes)
++  end
++end
+diff --git a/lib/pgpex/packet_writers/writer_utils.ex b/lib/pgpex/packet_writers/writer_utils.ex
+new file mode 100644
+index 0000000..225e1d5
+--- /dev/null
++++ b/lib/pgpex/packet_writers/writer_utils.ex
+@@ -0,0 +1,48 @@
++defmodule Pgpex.PacketWriters.WriterUtils do
++  require Bitwise
++
++  def write_new_format_length_and_tag(tag, length) do
++    first_byte = Bitwise.bor(192, tag)
++    <<first_byte::big-unsigned-integer-size(8)>> <> encode_new_format_len(length)
++  end
++
++  def encode_tagged_eof(tag) do
++    <<1::big-unsigned-integer-size(1),
++      0::big-unsigned-integer-size(1),
++      tag::big-unsigned-integer-size(4),
++      3::big-unsigned-integer-size(2)>>
++  end
++
++  def new_format_tag(tag) do
++    first_byte = Bitwise.bor(192, tag)
++    <<first_byte::big-unsigned-integer-size(8)>>
++  end
++
++  def encode_new_format_varlen(num) do
++    b_val = 224 + b_shift_to_zero(num, 0)
++    <<b_val::big-unsigned-integer-size(8)>>
++  end
++
++  def encode_new_format_len(l) when l < 192 do
++    <<l::big-unsigned-integer-size(8)>>
++  end
++
++  def encode_new_format_len(l) when (l > 191) and (l < 8384) do
++    s_length = l - 192
++    first_octet = div(s_length, 256) + 192
++    second_octet = Bitwise.band(s_length, 255)
++    <<first_octet::big-unsigned-integer-size(8), second_octet::big-unsigned-integer-size(8)>>
++  end
++
++  def encode_new_format_len(l) when (l > 8383) and (l < 4294967296) do
++    <<255::big-unsigned-integer-size(8), l::big-unsigned-integer-size(32)>>
++  end
++
++  defp b_shift_to_zero(val, tot) when val > 1 do
++    b_shift_to_zero(div(val,2), tot + 1)
++  end
++
++  defp b_shift_to_zero(_, tot) do
++    tot
++  end
++end
+diff --git a/lib/pgpex/packets/compressed_data.ex b/lib/pgpex/packets/compressed_data.ex
+new file mode 100644
+index 0000000..a1e19ee
+--- /dev/null
++++ b/lib/pgpex/packets/compressed_data.ex
+@@ -0,0 +1,70 @@
++defmodule Pgpex.Packets.CompressedData do
++  @type t :: %__MODULE__{}
++
++  @compression_algos %{
++    0 => :none,
++    1 => :zip,
++    2 => :zlib,
++    3 => :bzip2
++  }
++
++  defstruct [
++    io: nil,
++    packet_length: 0,
++    packet_indexes: [],
++    data_length: 0,
++    positions: [],
++    algo: nil,
++    reader: nil
++  ]
++
++  @spec parse(
++          any(),
++          Pgpex.PacketHeader.t(:compressed_data)
++        ) ::
++          {:error,
++           atom() | binary() | [byte()] | {:error, atom() | {:no_translation, :unicode, :latin1}}}
++          | Pgpex.Packets.CompressedData.t()
++  def parse(f, %Pgpex.PacketHeader{tag: :compressed_data, packet_length: packet_len, packet_locations: packet_indexes, data_length: data_len, data_locations: positions}) do
++    with {file_start, data_length, data_positions} <- data_indexes(data_len, positions),
++         {:ok, read_algo} <- read_algo(f, file_start) do
++      skr = Pgpex.Primitives.SkipFileReader.new(f, data_length, data_positions)
++      %__MODULE__{
++        io: f,
++        packet_length: packet_len,
++        packet_indexes: packet_indexes,
++        data_length: data_length,
++        positions: data_positions,
++        algo: read_algo,
++        reader: skr
++      }
++    end
++  end
++
++  defp data_indexes(length, {s_pos, e_pos}) do
++   {s_pos, length - 1, [{s_pos + 1, e_pos}]}
++  end
++
++  defp data_indexes(length, [{s_pos, e_pos}|others]) do
++    {s_pos, length - 1, [{s_pos + 1, e_pos}|others]}
++  end
++
++  defp read_algo(f, file_start) do
++    with ({:ok, _} <- :file.position(f, file_start)) do
++      case IO.binread(f,1) do
++        <<data::big-unsigned-integer-size(8)>> -> {:ok, Map.get(@compression_algos, data, {:unknown, data})}
++        :eof -> {:error, :eof_while_reading_compression_algo}
++        a -> {:error, a}
++      end
++    end
++  end
++
++  def create_reader(%__MODULE__{algo: :zlib, reader: skr}) do
++    Pgpex.Primitives.ZlibStream.create_reader_stream(skr)
++  end
++
++  def create_reader(%__MODULE__{algo: a}) do
++    {:error, {:unsupported_compressed_data_algo, a}}
++  end
++
++end
+diff --git a/lib/pgpex/packets/key_packet.ex b/lib/pgpex/packets/key_packet.ex
+new file mode 100644
+index 0000000..058cad1
+--- /dev/null
++++ b/lib/pgpex/packets/key_packet.ex
+@@ -0,0 +1,27 @@
++defmodule Pgpex.Packets.KeyPacket do
++  def read_validity_and_algo(f) do
++    case IO.binread(f, 3) do
++      <<validity::big-unsigned-integer-size(16),algo::big-unsigned-integer-size(8)>> -> {:ok, validity, algo}
++      <<data::binary>> -> {:error, {:read_validity_and_algo_error, data}}
++      :eof -> {:error, :read_validity_and_algo_eof}
++      a -> {:error, a}
++    end
++  end
++
++  def read_algo(f) do
++    case IO.binread(f, 1) do
++      <<algo::big-unsigned-integer-size(8)>> -> {:ok, algo}
++      :eof -> {:error, :read_algo_eof}
++      a -> {:error, a}
++    end
++  end
++
++  def read_version_and_k_time(f) do
++    case IO.binread(f, 5) do
++      <<ver::big-unsigned-integer-size(8),k_time::binary-size(4)>> -> {:ok, ver, k_time}
++      <<data::binary>> -> {:error, {:key_version_and_time_data_too_sort, data}}
++      :eof -> {:error, :key_version_and_time_eof}
++      e -> {:error, {:key_version_and_time_read_error, e}}
++    end
++  end
++end
+diff --git a/lib/pgpex/packets/literal_data.ex b/lib/pgpex/packets/literal_data.ex
+new file mode 100644
+index 0000000..9b7d112
+--- /dev/null
++++ b/lib/pgpex/packets/literal_data.ex
+@@ -0,0 +1,97 @@
++defmodule Pgpex.Packets.LiteralData do
++
++  @type t :: %__MODULE__{}
++
++  @formats %{
++    0x62 => :binary,
++    0x74 => :text,
++    0x75 => :utf8
++  }
++
++  defstruct [
++    reader: nil,
++    io: nil,
++    packet_length: 0,
++    packet_indexes: [],
++    data_length: 0,
++    positions: [],
++    format: :binary,
++    data_date: nil,
++    file_name: nil
++  ]
++
++  import Pgpex.Primitives.IOUtils
++
++  @spec parse(
++          any(),
++          Pgpex.PacketHeader.t(:literal_data)
++        )  ::
++        {:error, any()}
++        | t()
++  def parse(f, %Pgpex.PacketHeader{tag: :literal_data, packet_length: packet_len, packet_locations: packet_indexes, data_length: data_len, data_locations: positions}) do
++    with {file_start, data_length, data_positions} <- data_indexes(data_len, positions),
++         {:ok, format} <- read_format(f, file_start),
++         {:ok, file_name, date, lit_len, lit_pos} <- read_file_name_and_data_date(f, data_length, data_positions) do
++      skr = Pgpex.Primitives.SkipFileReader.new(f, lit_len, lit_pos)
++      %__MODULE__{
++        io: f,
++        packet_length: packet_len,
++        packet_indexes: packet_indexes,
++        data_length: lit_len,
++        positions: lit_pos,
++        format: format,
++        reader: skr,
++        data_date: date,
++        file_name: file_name
++      }
++    end
++  end
++
++  defp read_format(f, file_start) do
++    with ({:ok, _} <- :file.position(f, file_start)) do
++      case IO.binread(f,1) do
++        <<data::big-unsigned-integer-size(8)>> -> {:ok, Map.get(@formats, data, {:unknown, data})}
++        :eof -> {:error, :eof_while_reading_compression_algo}
++        a -> {:error, a}
++      end
++    end
++  end
++
++  defp read_file_name_and_data_date(f, d_len, [{s_start, s_end}|others]) do
++     with {:ok, fn_len} <- read_fn_len(f),
++          {:ok, f_name} <- read_fname(f, fn_len),
++          {:ok, date} <- read_date(f) do
++        {:ok, f_name, date, d_len - 5 - fn_len, [{s_start + 5 + fn_len,s_end}|others]}
++     end
++  end
++
++  defp read_fname(f, fname_len) do
++    case IO.binread(f,fname_len) do
++      <<f_name::binary-size(fname_len)>> -> {:ok, f_name}
++      <<invalid_data::binary>> -> {:error, {:file_name_read_too_short, invalid_data}}
++      :eof -> {:error, :file_name_read_eof}
++      a -> {:error, a}
++    end
++  end
++
++
++  defp read_fn_len(f) do
++    binread_match(f, 1, :file_name_length_read_eof, :file_name_length_invalid) do
++      <<fn_len::unsigned-big-integer-size(8)>> -> {:ok, fn_len}
++    end
++  end
++
++  defp read_date(f) do
++    binread_match(f, 4, :date_read_eof, :date_invalid) do
++      <<date::binary-size(4)>> -> {:ok, date}
++    end
++  end
++
++  defp data_indexes(length, {s_pos, e_pos}) do
++    {s_pos, length - 1, [{s_pos + 1, e_pos}]}
++  end
++
++  defp data_indexes(length, [{s_pos, e_pos}|others]) do
++    {s_pos, length - 1, [{s_pos + 1, e_pos}|others]}
++  end
++end
+diff --git a/lib/pgpex/packets/public_key.ex b/lib/pgpex/packets/public_key.ex
+index e4ca49a..0d1edbe 100644
+--- a/lib/pgpex/packets/public_key.ex
++++ b/lib/pgpex/packets/public_key.ex
+@@ -1,36 +1,96 @@
+ defmodule Pgpex.Packets.PublicKey do
++  @type t :: %__MODULE__{
++    tag: tag(),
++    version: 3,
++    public_key: any(),
++    usage: usage(),
++    algo_type: algo_type(),
++    validity: binary(),
++    key_time: binary()
++  } |
++  %__MODULE__{
++    tag: tag(),
++    version: 4,
++    public_key: any(),
++    usage: usage(),
++    algo_type: algo_type(),
++    validity: nil,
++    key_time: binary()
++  }
++  @type tag :: :public_key | :public_subkey
++  @type usage :: :encrypt | :sign | :both
++  @type algo_type :: :rsa
++
+   @pk_algo_identifiers %{
+     1 => {:rsa, :both},
+     2 => {:rsa, :encrypt},
+     3 => {:rsa, :sign}
+   }
+ 
+-  def parse(f, {:public_key, packet_len, packet_indexes, data_len, {d_start, d_end}} = d) do
++  defstruct [
++    version: 4,
++    tag: :public_key,
++    usage: :encrypt,
++    algo_type: :rsa,
++    key_time: nil,
++    public_key: nil,
++    validity: nil
++  ]
++
++  @spec parse(
++          any(),
++          Pgpex.PacketHeader.t(:public_key | :public_subkey)
++          ) ::
++          {:error,
++             atom()
++             | {:key_version_and_time_data_too_sort, binary()}
++             | {:key_version_and_time_read_error, atom() | {:no_translation, :unicode, :latin1}}
++             | {:unsupported_key_type, any()}
++             | {:no_translation, :unicode, :latin1}
++             | {:unsupported_packet_version, :public_key | :public_subkey, byte()}}
++          | t()
++  def parse(f, %Pgpex.PacketHeader{tag: :public_key, data_length: data_len, data_locations: {d_start, _d_end}}) do
+     with {:ok, _} <- :file.position(f, d_start),
+-         {:ok, ver, k_time} <- read_version_and_k_time(f) do
++         {:ok, ver, k_time} <- Pgpex.Packets.KeyPacket.read_version_and_k_time(f) do
+       read_packet(:public_key, f, ver, k_time, data_len - 5)
+     end
+   end
+ 
+-  def parse(f, {:public_subkey, packet_len, packet_indexes, data_len, {d_start, d_end}} = d) do
++  def parse(f,  %Pgpex.PacketHeader{tag: :public_subkey, data_length: data_len, data_locations: {d_start, _d_end}}) do
+     with {:ok, _} <- :file.position(f, d_start),
+-         {:ok, ver, k_time} <- read_version_and_k_time(f) do
++         {:ok, ver, k_time} <- Pgpex.Packets.KeyPacket.read_version_and_k_time(f) do
+       read_packet(:public_subkey, f, ver, k_time, data_len - 5)
+     end
+   end
+ 
+   defp read_packet(tag, f, 3, k_time, len_left) do
+-    with (<<validity::big-unsigned-integer-size(16),algo::big-unsigned-integer-size(8)>> <- IO.binread(f, 3)) do
+-      {algo_type, usage} = Map.get(@pk_algo_identifiers, algo, {:unknown, :unknown})
+-      {tag, 3, k_time, validity, algo_type, usage}
++    with {:ok, validity, algo} <- Pgpex.Packets.KeyPacket.read_validity_and_algo(f),
++         {algo_type, usage} = Map.get(@pk_algo_identifiers, algo, {:unknown, :unknown}),
++         {:ok, key_data} <- read_key_data(f, algo, len_left - 3) do
++      %__MODULE__{
++        tag: tag,
++        version: 3,
++        validity: validity,
++        usage: usage,
++        algo_type: algo_type,
++        key_time: k_time,
++        public_key: key_data
++      }
+     end
+   end
+ 
+   defp read_packet(tag,  f, 4, k_time, len_left) do
+-    with <<algo::big-unsigned-integer-size(8)>> <- IO.binread(f, 1),
++    with {:ok, algo} <- Pgpex.Packets.KeyPacket.read_algo(f),
+          {algo_type, usage} = Map.get(@pk_algo_identifiers, algo, {:unknown, :unknown}),
+          {:ok, key_data} <- read_key_data(f, algo_type, len_left - 1) do
+-      {tag, 4, k_time, algo_type, usage, key_data}
++      %__MODULE__{
++        tag: tag,
++        version: 4,
++        usage: usage,
++        algo_type: algo_type,
++        key_time: k_time,
++        public_key: key_data
++      }
+     end
+   end
+ 
+@@ -39,8 +99,8 @@ defmodule Pgpex.Packets.PublicKey do
+   end
+ 
+   defp read_key_data(f, :rsa, _) do
+-    with {:ok, m} <- read_mpi(f),
+-         {:ok, e} <- read_mpi(f) do
++    with {:ok, m} <- Pgpex.Primitives.Mpi.read_mpi(f),
++         {:ok, e} <- Pgpex.Primitives.Mpi.read_mpi(f) do
+       {:ok, create_rsa_public_key_record(m, e)}
+     end
+   end
+@@ -49,26 +109,6 @@ defmodule Pgpex.Packets.PublicKey do
+     {:error, {:unsupported_key_type, k_type}}
+   end
+ 
+-  defp read_mpi(f) do
+-    with (<<mpi_len::big-unsigned-integer-size(16)>> <- IO.binread(f, 2)) do
+-      mpi_bits = mpi_len + 7
+-      mpi_bytes = div(mpi_bits, 8)
+-      mpi_bit_size = mpi_bytes * 8
+-      with (<<mpi_val::big-unsigned-integer-size(mpi_bit_size)>> <- IO.binread(f, mpi_bytes)) do
+-        {:ok, mpi_val}
+-      end
+-    end
+-  end
+-
+-  defp read_version_and_k_time(f) do
+-    case IO.binread(f, 5) do
+-      <<ver::big-unsigned-integer-size(8),k_time::binary-size(4)>> -> {:ok, ver, k_time}
+-      <<data::binary>> -> {:error, {:key_version_and_time_data_too_sort, data}}
+-      :eof -> {:error, :key_version_and_time_eof}
+-      {:error, e} -> {:error, {:key_version_and_time_read_error, e}}
+-    end
+-  end
+-
+   defp create_rsa_public_key_record(m, e) do
+     {:'RSAPublicKey', m, e}
+   end
+diff --git a/lib/pgpex/packets/public_key_encrypted_session_key.ex b/lib/pgpex/packets/public_key_encrypted_session_key.ex
+index c22103c..5646123 100644
+--- a/lib/pgpex/packets/public_key_encrypted_session_key.ex
++++ b/lib/pgpex/packets/public_key_encrypted_session_key.ex
+@@ -1,11 +1,86 @@
+ defmodule Pgpex.Packets.PublicKeyEncryptedSessionKey do
+-  def parse(f, {:public_key_encrypted_session_key, packet_len, packet_indexes, data_len, {d_start, d_end}} = d) do
++  @type t :: %__MODULE__{
++    version: 3,
++    key_id: binary(),
++    key_kind: key_kind(),
++    encrypted_session_key: binary()
++  }
++  @type key_kind :: {:rsa, :both} | {:rsa, :encrypt} | {:rsa, :sign}
++
++  @pk_algo_identifiers %{
++    1 => {:rsa, :both},
++    2 => {:rsa, :encrypt},
++    3 => {:rsa, :sign}
++  }
++
++  @type key_provider :: (key_kind(), binary() -> {:error, any()} | {:ok, term()} | {:ok, [term()]} )
++
++  defstruct [
++    version: 3,
++    key_id: nil,
++    key_kind: {:rsa, :both},
++    encrypted_session_key: nil
++  ]
++
++  @spec parse(
++          any(),
++          Pgpex.PacketHeader.t(:public_key_encrypted_session_key)
++        ) ::
++          {:error,
++             atom()
++             | {:version_key_id_and_pk_algo_data_read_error,
++                atom() | {:no_translation, :unicode, :latin1}}
++             | {:version_key_id_and_pk_algo_data_too_short, binary()}
++             | {:no_translation, :unicode, :latin1}}
++          | t()
++  def parse(f, %Pgpex.PacketHeader{tag: :public_key_encrypted_session_key, data_locations: {d_start, _d_end}}) do
+     with {:ok, _} <- :file.position(f, d_start),
+-         <<version::big-unsigned-integer-size(8)>> <- IO.binread(f, 1),
+-         <<key_id::binary-size(8)>> <- IO.binread(f, 8),
+-         <<pk_algo::big-unsigned-integer-size(8)>> <- IO.binread(f, 1),
+-         <<packet_data::binary>> <- IO.binread(f, data_len - 10) do
+-      {:public_key_encrypted_session_key, version, key_id, pk_algo, packet_data}
++         {:ok, version, key_id, pk_algo} <- read_version_key_id_and_pk_algo(f),
++         key_kind = Map.get(@pk_algo_identifiers, pk_algo, {:unknown, :unknown}),
++         {:ok, encrypted_session_key} <- read_encrypted_session_key(key_kind, f) do
++      %__MODULE__{
++        version: version,
++        key_id: key_id,
++        key_kind: key_kind,
++        encrypted_session_key: encrypted_session_key
++      }
++    end
++  end
++
++  @spec decrypt_session_key(t(), key_provider()) :: {:ok, binary()} | {:ok, [binary]} | {:error, any()}
++  def decrypt_session_key(%__MODULE__{key_kind: k_kind,key_id: k_id, encrypted_session_key: esk}, key_provider) do
++    case key_provider.(k_kind, k_id) do
++      {:ok, keys} when is_list(keys) -> try_decrypt_list(k_id, k_kind, keys, esk)
++      {:ok, key} -> Pgpex.SessionKeyDecryptor.decrypt_session_key(k_kind, key, esk)
++      {:error, e} -> {:error, {:no_matching_key, k_kind, k_id, e}}
++    end
++  end
++
++  defp try_decrypt_list(k_id, _, [], _) do
++    {:error, {:no_matching_key, k_id}}
++  end
++
++  defp try_decrypt_list(k_id, k_kind, keys, esk) do
++    k_results = Enum.map(keys, fn(k) ->
++      Pgpex.SessionKeyDecryptor.decrypt_session_key(k_kind, k, esk)
++    end)
++    k_oks = Enum.filter(k_results, fn({:ok, _}) -> true end)
++    case Enum.any?(k_oks) do
++      false -> {:error, {:no_matching_key, k_id}}
++      _ -> {:ok, Enum.map(k_oks, fn({:ok, v}) -> v end)}
++    end
++  end
++
++  defp read_encrypted_session_key({:rsa, _}, f) do
++    Pgpex.Primitives.Mpi.read_mpi_bytes(f)
++  end
++
++  defp read_version_key_id_and_pk_algo(f) do
++    case IO.binread(f, 10) do
++      <<version::big-unsigned-integer-size(8),key_id::binary-size(8),pk_algo::big-unsigned-integer-size(8)>> -> {:ok, version, key_id, pk_algo}
++      <<data::binary>> -> {:error,{:version_key_id_and_pk_algo_data_too_short, data}}
++      :eof -> {:error,:version_key_id_and_pk_algo_data_eof}
++      e -> {:error, {:version_key_id_and_pk_algo_data_read_error, e}}
+     end
+   end
+ end
+diff --git a/lib/pgpex/packets/secret_key.ex b/lib/pgpex/packets/secret_key.ex
+index bfaaf88..e18cc32 100644
+--- a/lib/pgpex/packets/secret_key.ex
++++ b/lib/pgpex/packets/secret_key.ex
+@@ -1,36 +1,100 @@
+ defmodule Pgpex.Packets.SecretKey do
++  @type t :: v3_packet | v4_packet
++  @type v3_packet :: %__MODULE__{
++    tag: tag(),
++    version: 3,
++    algo_type: algo(),
++    usage: usage(),
++    validity: binary(),
++    key_time: binary(),
++    secret_key: any()
++  }
++  @type v4_packet :: %__MODULE__{
++    tag: tag(),
++    version: 4,
++    algo_type: algo(),
++    usage: usage(),
++    validity: nil,
++    key_time: binary(),
++    secret_key: any()
++  }
++  @type tag :: :secret_key | :secret_subkey
++
++  @type algo :: :rsa
++  @type usage :: :encrypt | :sign | :both
++
++  defstruct [
++    tag: :public_key,
++    version:  4,
++    algo_type: :rsa,
++    usage: :both,
++    secret_key: nil,
++    validity: nil,
++    key_time: nil
++  ]
++
+   @pk_algo_identifiers %{
+     1 => {:rsa, :both},
+     2 => {:rsa, :encrypt},
+     3 => {:rsa, :sign}
+   }
+ 
+-  def parse(f, {:secret_key, packet_len, packet_indexes, data_len, {d_start, d_end}} = d) do
++  import Pgpex.Primitives.IOUtils
++
++  @spec parse(
++          any(),
++          Pgpex.PacketHeader.t(:secret_key | :secret_subkey)
++          ) ::
++          {:error,
++             atom()
++             | {:key_version_and_time_data_too_sort, binary()}
++             | {:key_version_and_time_read_error, atom() | {:no_translation, :unicode, :latin1}}
++             | {:unsupported_key_type, any()}
++             | {:no_translation, :unicode, :latin1}
++             | {:unsupported_packet_version, :secret_key | :secret_subkey, byte()}}
++          | t()
++  def parse(f, %Pgpex.PacketHeader{tag: :secret_key, data_length: data_len, data_locations: {d_start, _d_end}}) do
+     with {:ok, _} <- :file.position(f, d_start),
+-         {:ok, ver, k_time} <- read_version_and_k_time(f) do
++         {:ok, ver, k_time} <- Pgpex.Packets.KeyPacket.read_version_and_k_time(f) do
+       read_packet(:secret_key, f, ver, k_time, data_len - 5)
+     end
+   end
+ 
+-  def parse(f, {:secret_subkey, packet_len, packet_indexes, data_len, {d_start, d_end}} = d) do
++  def parse(f, %Pgpex.PacketHeader{tag: :secret_subkey, data_length: data_len, data_locations: {d_start, _d_end}}) do
+     with {:ok, _} <- :file.position(f, d_start),
+-         {:ok, ver, k_time} <- read_version_and_k_time(f) do
++         {:ok, ver, k_time} <- Pgpex.Packets.KeyPacket.read_version_and_k_time(f) do
+       read_packet(:secret_subkey, f, ver, k_time, data_len - 5)
+     end
+   end
+ 
+   defp read_packet(tag, f, 3, k_time, len_left) do
+-    with (<<validity::big-unsigned-integer-size(16),algo::big-unsigned-integer-size(8)>> <- IO.binread(f, 3)) do
+-      {algo_type, usage} = Map.get(@pk_algo_identifiers, algo, {:unknown, :unknown})
+-      {tag, 3, k_time, validity, algo_type, usage}
++    with {:ok, validity, algo} <- Pgpex.Packets.KeyPacket.read_validity_and_algo(f),
++         {algo_type, usage} = Map.get(@pk_algo_identifiers, algo, {:unknown, :unknown}),
++         {:ok, key_data} <- read_key_data(f, algo_type, len_left - 1) do
++      %__MODULE__{
++        tag: tag,
++        version: 3,
++        key_time: k_time,
++        algo_type: algo_type,
++        usage: usage,
++        validity: validity,
++        secret_key: key_data
++      }
+     end
+   end
+ 
+   defp read_packet(tag, f, 4, k_time, len_left) do
+-    with (<<algo::big-unsigned-integer-size(8)>> <- IO.binread(f, 1)),
++    with {:ok, algo} <- Pgpex.Packets.KeyPacket.read_algo(f),
+       {algo_type, usage} = Map.get(@pk_algo_identifiers, algo, {:unknown, :unknown}),
+       {:ok, key_data} <- read_key_data(f, algo_type, len_left - 1) do
+-      {tag, 4, k_time, algo_type, usage, key_data}
++      %__MODULE__{
++        tag: tag,
++        version: 4,
++        key_time: k_time,
++        algo_type: algo_type,
++        usage: usage,
++        secret_key: key_data
++      }
+     end
+   end
+ 
+@@ -39,8 +103,8 @@ defmodule Pgpex.Packets.SecretKey do
+   end
+ 
+   defp read_key_data(f, :rsa, _) do
+-    with {:ok, m} <- read_mpi(f),
+-         {:ok, e} <- read_mpi(f),
++    with {:ok, m} <- Pgpex.Primitives.Mpi.read_mpi(f),
++         {:ok, e} <- Pgpex.Primitives.Mpi.read_mpi(f),
+          {:ok, d, p, q, u} <- read_rsa_secret_key_data(f) do
+       {:ok, create_rsa_private_key_record(m, e, d, p, q, u)}
+     end
+@@ -51,36 +115,18 @@ defmodule Pgpex.Packets.SecretKey do
+   end
+ 
+   defp read_rsa_secret_key_data(f) do
+-    with <<0::big-unsigned-integer-size(8)>> <- IO.binread(f, 1),
+-         {:ok, d} <- read_mpi(f),
+-         {:ok, p} <- read_mpi(f),
+-         {:ok, q} <- read_mpi(f),
+-         {:ok, u} <- read_mpi(f) do
+-      {:ok, d, p, q, u}
+-    end
+-  end
+-
+-  defp read_mpi(f) do
+-    with (<<mpi_len::big-unsigned-integer-size(16)>> <- IO.binread(f, 2)) do
+-      mpi_bits = mpi_len + 7
+-      mpi_bytes = div(mpi_bits, 8)
+-      mpi_bit_size = mpi_bytes * 8
+-      with (<<mpi_val::big-unsigned-integer-size(mpi_bit_size)>> <- IO.binread(f, mpi_bytes)) do
+-        {:ok, mpi_val}
+-      end
++    binread_match(f, 1, :read_secret_key_version_eof, :unsupported_secret_key_s2k) do
++      <<0::big-unsigned-integer-size(8)>> ->
++        with {:ok, d} <- Pgpex.Primitives.Mpi.read_mpi(f),
++             {:ok, p} <- Pgpex.Primitives.Mpi.read_mpi(f),
++             {:ok, q} <- Pgpex.Primitives.Mpi.read_mpi(f),
++             {:ok, u} <- Pgpex.Primitives.Mpi.read_mpi(f) do
++          {:ok, d, p, q, u}
++        end
+     end
+   end
+ 
+   defp create_rsa_private_key_record(m, e, d, p, q, u) do
+     {:'RSAPrivateKey', 1, m, e, d, p, q, rem(d, p - 1), rem(d, q - 1), u, :asn1_NOVALUE}
+   end
+-
+-  defp read_version_and_k_time(f) do
+-    case IO.binread(f, 5) do
+-      <<ver::big-unsigned-integer-size(8),k_time::binary-size(4)>> -> {:ok, ver, k_time}
+-      <<data::binary>> -> {:error, {:key_version_and_time_data_too_sort, data}}
+-      :eof -> {:error, :key_version_and_time_eof}
+-      {:error, e} -> {:error, {:key_version_and_time_read_error, e}}
+-    end
+-  end
+ end
+diff --git a/lib/pgpex/packets/symmetrically_encrypted_and_integrity_protected_data.ex b/lib/pgpex/packets/symmetrically_encrypted_and_integrity_protected_data.ex
+new file mode 100644
+index 0000000..7873329
+--- /dev/null
++++ b/lib/pgpex/packets/symmetrically_encrypted_and_integrity_protected_data.ex
+@@ -0,0 +1,54 @@
++defmodule Pgpex.Packets.SymmetricallyEncryptedAndIntegrityProtectedData do
++  @type t :: %__MODULE__{}
++
++  defstruct [
++    version: 1,
++    packet_length: 0,
++    packet_indexes: nil,
++    data_length: 0,
++    data_indexes: [],
++    io: nil
++  ]
++
++  @spec parse(
++          any(),
++          Pgpex.PacketHeader.t(:symmetrically_encrypted_and_integrity_protected_data)
++        ) ::
++          {:error,
++           atom()
++           | {:packet_version_read_error,
++              binary() | [byte()] | {:error, atom() | {any(), any(), any()}}}
++           | {:unsupported_packet_version, binary()}}
++          | Pgpex.Packets.SymmetricallyEncryptedAndIntegrityProtectedData.t()
++  def parse(f, %Pgpex.PacketHeader{tag: :symmetrically_encrypted_and_integrity_protected_data, packet_length: packet_len, packet_locations: packet_indexes, data_length: data_len, data_locations: p_indexes}) do
++    with({:ok, version, dis} <- read_version(f, p_indexes))do
++      %__MODULE__{
++        version: version,
++        packet_length: packet_len,
++        packet_indexes: packet_indexes,
++        data_length: data_len - 1,
++        data_indexes: dis,
++        io: f
++      }
++    end
++  end
++
++  defp read_version(f, {d_start, d_end}) do
++    read_version_at(f, d_start, [{d_start + 1, d_end}])
++  end
++
++  defp read_version(f, [{d_start, d_end}|other_dis]) do
++    read_version_at(f, d_start, [{d_start + 1, d_end}|other_dis])
++  end
++
++  defp read_version_at(f, d_start, dis) do
++    with({:ok, _} <- :file.position(f, d_start)) do
++      case IO.binread(f, 1) do
++        <<1::big-unsigned-integer-size(8)>> -> {:ok, 1, dis}
++        <<data::binary>> -> {:error, {:unsupported_packet_version, data}}
++        :eof -> {:error, :packet_version_read_eof}
++        a -> {:error, {:packet_version_read_error, a}}
++      end
++    end
++  end
++end
+diff --git a/lib/pgpex/primitives/behaviours/readable_file.ex b/lib/pgpex/primitives/behaviours/readable_file.ex
+new file mode 100644
+index 0000000..af1d134
+--- /dev/null
++++ b/lib/pgpex/primitives/behaviours/readable_file.ex
+@@ -0,0 +1,60 @@
++defmodule Pgpex.Primitives.Behaviours.ReadableFile do
++  @type readable_file_struct :: map()
++
++  @type read_position :: :bof | :eof | :cur | non_neg_integer()
++
++  @callback binread(readable_file_struct(),non_neg_integer()) :: :eof | {:error, any()} | {:ok, readable_file_struct(), binary()}
++
++  @callback position(readable_file_struct(),read_position) :: any()
++
++  @callback close(readable_file_struct()) :: any()
++
++  def wrap_as_file(mod, stream) do
++    pid = spawn(fn() -> loop(mod, stream) end)
++    case function_exported?(mod, :transfer_ownership, 2) do
++      false -> pid
++      _ ->
++        mod.transfer_ownership(stream, pid)
++        pid
++    end
++  end
++
++  defp loop(mod, skr) do
++    receive do
++      {:io_request, from, reply_ref, {:get_chars, :"", n}} ->
++        handle_read_request(mod, from, reply_ref, skr, n)
++      {:file_request, from, reply_ref, {:position, p}} ->
++        handle_position_request(mod, from, reply_ref, skr, p)
++      {:file_request, from, reply_ref, :close} ->
++        send(from, {:file_reply,reply_ref, mod.close(skr)})
++      a ->
++        IO.inspect(a)
++        loop(mod, skr)
++    end
++  end
++
++  defp handle_read_request(mod, from, reply_ref, stream, n) do
++    case mod.binread(stream, n) do
++      {:ok, new_s, data} ->
++          send(from, {:io_reply,reply_ref, data})
++          loop(mod, new_s)
++      :eof ->
++        send(from, {:io_reply, reply_ref, :eof})
++        loop(mod, stream)
++      a ->
++        send(from, {:io_reply, reply_ref, {:error, a}})
++        loop(mod, stream)
++    end
++  end
++
++  defp handle_position_request(mod, from, reply_ref, stream, p) do
++    case mod.position(stream, p) do
++      {:ok, new_s, new_p} ->
++          send(from, {:file_reply,reply_ref, {:ok, new_p}})
++          loop(mod, new_s)
++      a ->
++        send(from, {:file_reply, reply_ref, {:error, a}})
++        loop(mod, stream)
++    end
++  end
++end
+diff --git a/lib/pgpex/primitives/crc24.ex b/lib/pgpex/primitives/crc24.ex
+new file mode 100644
+index 0000000..9f55e37
+--- /dev/null
++++ b/lib/pgpex/primitives/crc24.ex
+@@ -0,0 +1,57 @@
++defmodule Pgpex.Primitives.Crc24 do
++  require Bitwise
++
++  @lookup_table [
++    0x000000, 0x864cfb, 0x8ad50d, 0x0c99f6, 0x93e6e1, 0x15aa1a, 0x1933ec, 0x9f7f17,
++    0xa18139, 0x27cdc2, 0x2b5434, 0xad18cf, 0x3267d8, 0xb42b23, 0xb8b2d5, 0x3efe2e,
++    0xc54e89, 0x430272, 0x4f9b84, 0xc9d77f, 0x56a868, 0xd0e493, 0xdc7d65, 0x5a319e,
++    0x64cfb0, 0xe2834b, 0xee1abd, 0x685646, 0xf72951, 0x7165aa, 0x7dfc5c, 0xfbb0a7,
++    0x0cd1e9, 0x8a9d12, 0x8604e4, 0x00481f, 0x9f3708, 0x197bf3, 0x15e205, 0x93aefe,
++    0xad50d0, 0x2b1c2b, 0x2785dd, 0xa1c926, 0x3eb631, 0xb8faca, 0xb4633c, 0x322fc7,
++    0xc99f60, 0x4fd39b, 0x434a6d, 0xc50696, 0x5a7981, 0xdc357a, 0xd0ac8c, 0x56e077,
++    0x681e59, 0xee52a2, 0xe2cb54, 0x6487af, 0xfbf8b8, 0x7db443, 0x712db5, 0xf7614e,
++    0x19a3d2, 0x9fef29, 0x9376df, 0x153a24, 0x8a4533, 0x0c09c8, 0x00903e, 0x86dcc5,
++    0xb822eb, 0x3e6e10, 0x32f7e6, 0xb4bb1d, 0x2bc40a, 0xad88f1, 0xa11107, 0x275dfc,
++    0xdced5b, 0x5aa1a0, 0x563856, 0xd074ad, 0x4f0bba, 0xc94741, 0xc5deb7, 0x43924c,
++    0x7d6c62, 0xfb2099, 0xf7b96f, 0x71f594, 0xee8a83, 0x68c678, 0x645f8e, 0xe21375,
++    0x15723b, 0x933ec0, 0x9fa736, 0x19ebcd, 0x8694da, 0x00d821, 0x0c41d7, 0x8a0d2c,
++    0xb4f302, 0x32bff9, 0x3e260f, 0xb86af4, 0x2715e3, 0xa15918, 0xadc0ee, 0x2b8c15,
++    0xd03cb2, 0x567049, 0x5ae9bf, 0xdca544, 0x43da53, 0xc596a8, 0xc90f5e, 0x4f43a5,
++    0x71bd8b, 0xf7f170, 0xfb6886, 0x7d247d, 0xe25b6a, 0x641791, 0x688e67, 0xeec29c,
++    0x3347a4, 0xb50b5f, 0xb992a9, 0x3fde52, 0xa0a145, 0x26edbe, 0x2a7448, 0xac38b3,
++    0x92c69d, 0x148a66, 0x181390, 0x9e5f6b, 0x01207c, 0x876c87, 0x8bf571, 0x0db98a,
++    0xf6092d, 0x7045d6, 0x7cdc20, 0xfa90db, 0x65efcc, 0xe3a337, 0xef3ac1, 0x69763a,
++    0x578814, 0xd1c4ef, 0xdd5d19, 0x5b11e2, 0xc46ef5, 0x42220e, 0x4ebbf8, 0xc8f703,
++    0x3f964d, 0xb9dab6, 0xb54340, 0x330fbb, 0xac70ac, 0x2a3c57, 0x26a5a1, 0xa0e95a,
++    0x9e1774, 0x185b8f, 0x14c279, 0x928e82, 0x0df195, 0x8bbd6e, 0x872498, 0x016863,
++    0xfad8c4, 0x7c943f, 0x700dc9, 0xf64132, 0x693e25, 0xef72de, 0xe3eb28, 0x65a7d3,
++    0x5b59fd, 0xdd1506, 0xd18cf0, 0x57c00b, 0xc8bf1c, 0x4ef3e7, 0x426a11, 0xc426ea,
++    0x2ae476, 0xaca88d, 0xa0317b, 0x267d80, 0xb90297, 0x3f4e6c, 0x33d79a, 0xb59b61,
++    0x8b654f, 0x0d29b4, 0x01b042, 0x87fcb9, 0x1883ae, 0x9ecf55, 0x9256a3, 0x141a58,
++    0xefaaff, 0x69e604, 0x657ff2, 0xe33309, 0x7c4c1e, 0xfa00e5, 0xf69913, 0x70d5e8,
++    0x4e2bc6, 0xc8673d, 0xc4fecb, 0x42b230, 0xddcd27, 0x5b81dc, 0x57182a, 0xd154d1,
++    0x26359f, 0xa07964, 0xace092, 0x2aac69, 0xb5d37e, 0x339f85, 0x3f0673, 0xb94a88,
++    0x87b4a6, 0x01f85d, 0x0d61ab, 0x8b2d50, 0x145247, 0x921ebc, 0x9e874a, 0x18cbb1,
++    0xe37b16, 0x6537ed, 0x69ae1b, 0xefe2e0, 0x709df7, 0xf6d10c, 0xfa48fa, 0x7c0401,
++    0x42fa2f, 0xc4b6d4, 0xc82f22, 0x4e63d9, 0xd11cce, 0x575035, 0x5bc9c3, 0xdd8538
++  ]
++
++  @init_crc24 0xb704ce
++
++  def add(register, <<>>), do: register
++
++  def add(register, <<new_byte::binary-size(1), rest::binary>>) do
++    register |> add_byte(new_byte) |> add(rest)
++  end
++
++  defp add_byte(<<top::big-unsigned-integer-size(8), rest::big-unsigned-integer-size(16)>> = register, <<new_byte::big-unsigned-integer-size(8)>>) do
++    t_index = Bitwise.bxor(top, new_byte)
++    n_byte = Enum.at(@lookup_table, t_index)
++    new_reg = Bitwise.bxor(n_byte, rest * 256)
++    <<new_reg::big-unsigned-integer-size(24)>>
++  end
++
++  def init_register() do
++    <<@init_crc24::unsigned-big-integer-size(24)>>
++  end
++end
+diff --git a/lib/pgpex/primitives/io_utils.ex b/lib/pgpex/primitives/io_utils.ex
+new file mode 100644
+index 0000000..808bc97
+--- /dev/null
++++ b/lib/pgpex/primitives/io_utils.ex
+@@ -0,0 +1,21 @@
++defmodule Pgpex.Primitives.IOUtils do
++  defmacro binread_match(f, size, eof_error, invalid_error, do: s_block) do
++    clauses = quote do
++      <<invalid_data::binary>> -> {:error, {unquote(invalid_error), invalid_data}}
++      :eof -> {:error, unquote(eof_error)}
++      a -> {:error, a}
++    end
++    quote do
++      case IO.binread(unquote(f),unquote(size)) do unquote(s_block ++ clauses) end
++    end
++  end
++
++  defmacro seek_or_error(f, pos, error_name) do
++    quote do
++      case :file.position(unquote(f), unquote(pos)) do
++        {:ok, pos} -> :ok
++        {:error, a} -> {:error, {unquote(error_name), a}}
++      end
++    end
++  end
++end
+diff --git a/lib/pgpex/primitives/mdc_calc_state.ex b/lib/pgpex/primitives/mdc_calc_state.ex
+new file mode 100644
+index 0000000..97fc48b
+--- /dev/null
++++ b/lib/pgpex/primitives/mdc_calc_state.ex
+@@ -0,0 +1,61 @@
++defmodule Pgpex.Primitives.MdcCalcState do
++  @sha_size 20
++
++  defstruct [
++    last_iv: nil,
++    key: nil,
++    hash_state: nil,
++    skip_file_reader: nil,
++    last_non_hash_data_position: 0,
++    current_position: 0,
++    buffer: <<>>
++  ]
++
++  def add_new_iv_and_bytes(mdc, iv, new_bytes, sfr) do
++    new_pos = mdc.current_position + byte_size(new_bytes)
++    {for_hash, for_buff} = add_to_buffer(mdc.buffer, new_bytes)
++    new_hash_state = :crypto.hash_update(mdc.hash_state, for_hash)
++    %__MODULE__{
++      mdc |
++        current_position: new_pos,
++        buffer: for_buff,
++        last_iv: iv,
++        hash_state: new_hash_state,
++        skip_file_reader: sfr
++    }
++  end
++
++  def add_new_bytes_and_finish(mdc, new_bytes) do
++    new_pos = mdc.current_position + byte_size(new_bytes)
++    {for_hash, for_buff} = add_to_buffer(mdc.buffer, new_bytes)
++    new_hash_state = :crypto.hash_update(mdc.hash_state, for_hash)
++    finish(%__MODULE__{
++      mdc |
++        current_position: new_pos,
++        buffer: for_buff,
++        hash_state: new_hash_state
++    })
++  end
++
++  def finish(%__MODULE__{buffer: buff, hash_state: hs}) do
++    digest = :crypto.hash_final(hs)
++    case buff do
++      ^digest -> {:ok, digest}
++      _ -> {:error, {:mdc_mismatch, buff, digest}}
++    end
++  end
++
++  defp add_to_buffer(buff, new_bytes) do
++    total_size = byte_size(buff) + byte_size(new_bytes)
++    full_buff = buff <> new_bytes
++    size_difference = total_size - @sha_size
++    case (size_difference > 0) do
++      false -> {<<>>, full_buff}
++      _ ->
++        {
++          :binary.part(full_buff, 0, size_difference),
++          :binary.part(full_buff, size_difference, @sha_size)
++        }
++    end
++  end
++end
+diff --git a/lib/pgpex/primitives/mpi.ex b/lib/pgpex/primitives/mpi.ex
+new file mode 100644
+index 0000000..3dffd94
+--- /dev/null
++++ b/lib/pgpex/primitives/mpi.ex
+@@ -0,0 +1,81 @@
++defmodule Pgpex.Primitives.Mpi do
++  import Pgpex.Primitives.IOUtils
++  require Bitwise
++
++  def encode_mpi(<<>>) do
++    <<
++      1::unsigned-big-integer-size(16),
++      0::unsigned-big-integer-size(8)
++    >>
++  end
++
++  def encode_mpi(<<0::unsigned-big-integer-size(8),rest::binary>>) do
++    encode_mpi(rest)
++  end
++
++  def encode_mpi(<<top_byte::unsigned-big-integer-size(8),_::binary>> = val) when is_binary(val) do
++    bit_size = (byte_size(val) * 8) - shift_me_down(top_byte, 8)
++    <<bit_size::unsigned-big-integer-size(16)>> <> val
++  end
++
++  def encode_mpi(0) do
++    <<
++    1::unsigned-big-integer-size(16),
++    0::unsigned-big-integer-size(8)
++    >>
++  end
++
++  def encode_mpi(num) do
++    bits = mpi_int_bits(num)
++    binary_bytes = div(bits + 7, 8) * 8
++    <<
++      bits::unsigned-big-integer-size(16),
++      num::unsigned-big-integer-size(binary_bytes)
++    >>
++  end
++
++  defp mpi_int_bits(num) do
++    num
++      |> Integer.digits(2)
++      |> Enum.count
++  end
++
++  defp shift_me_down(0, n), do: n
++  defp shift_me_down(v, n) do
++    shift_me_down(div(v, 2), n - 1)
++  end
++
++  def read_mpi(f) do
++    with ({:ok, mpi_len} <- read_mpi_size(f)) do
++      mpi_bits = mpi_len + 7
++      mpi_bytes = div(mpi_bits, 8)
++      mpi_bit_size = mpi_bytes * 8
++      with ({:ok, mpi_value_as_bytes} <- read_mpi_value_bytes(f, mpi_bytes)) do
++        case mpi_value_as_bytes do
++          <<mpi_val::big-unsigned-integer-size(mpi_bit_size)>> -> {:ok, mpi_val}
++          _ -> {:error, {:mpi_conversion_error, mpi_bit_size, mpi_value_as_bytes}}
++        end
++      end
++    end
++  end
++
++  def read_mpi_bytes(f) do
++    with ({:ok, mpi_len} <- read_mpi_size(f)) do
++      mpi_bits = mpi_len + 7
++      mpi_bytes = div(mpi_bits, 8)
++      read_mpi_value_bytes(f, mpi_bytes)
++    end
++  end
++
++  defp read_mpi_size(f) do
++    binread_match(f, 2, :read_mpi_length_eof, :invalid_mpi_size) do
++      <<mpi_len::big-unsigned-integer-size(16)>> -> {:ok, mpi_len}
++    end
++  end
++
++  defp read_mpi_value_bytes(f, mpi_bytes) do
++    binread_match(f, mpi_bytes, :read_mpi_bytes_eof, :read_mpi_bytes_error) do
++      <<a::binary-size(mpi_bytes)>> -> {:ok, a}
++    end
++  end
++end
+diff --git a/lib/pgpex/primitives/session_key.ex b/lib/pgpex/primitives/session_key.ex
+new file mode 100644
+index 0000000..3fb1781
+--- /dev/null
++++ b/lib/pgpex/primitives/session_key.ex
+@@ -0,0 +1,50 @@
++defmodule Pgpex.Primitives.SessionKey do
++  @session_key_algos %{
++    9 => :aes_256
++  }
++
++  @session_key_syms %{
++    :aes_256 => 9
++  }
++
++  def encode_session_key(algo_sym, key_bytes) do
++    with ({:ok, algo_bytes} <- choose_algo_from_sym(algo_sym)) do
++      c_sum = byte_by_byte_checksum(key_bytes, 0)
++      {:ok, algo_bytes <> key_bytes <> <<c_sum::unsigned-big-integer-size(16)>>}
++    end
++  end
++
++  defp choose_algo_from_sym(algo_sym) do
++    case Map.has_key?(@session_key_syms, algo_sym) do
++      true ->
++        key_byte = Map.fetch!(@session_key_syms, algo_sym)
++        {:ok, <<key_byte::unsigned-big-integer-size(8)>>}
++      false -> {:error, {:invalid_session_key_algo, algo_sym}}
++    end
++  end
++
++  def decode_session_key(data) when is_binary(data) do
++    <<algo::integer-unsigned-big-size(8),rest::binary>> = data
++    <<checksum::big-integer-unsigned-size(16)>> = :binary.part(rest, byte_size(rest) - 2, 2)
++    key_data = :binary.part(rest, 0, byte_size(rest) - 2)
++    case byte_by_byte_checksum(key_data, 0) do
++      ^checksum -> resolve_session_key_algo(algo, key_data)
++      a -> {:error, {:checksum_mismatch, checksum, a}}
++    end
++  end
++
++  defp resolve_session_key_algo(algo, key_data) do
++    case Map.has_key?(@session_key_algos, algo) do
++      true -> {:ok, Map.fetch!(@session_key_algos, algo), key_data}
++      false -> {:error, {:unknown_session_key_algo, algo, key_data}}
++    end
++  end
++
++  defp byte_by_byte_checksum(<<>>, total) do
++    rem(total, 65536)
++  end
++
++  defp byte_by_byte_checksum(<<b::big-unsigned-integer-size(8),rest::binary>>, total) do
++    byte_by_byte_checksum(rest, b + total)
++  end
++end
+diff --git a/lib/pgpex/primitives/skip_file_reader.ex b/lib/pgpex/primitives/skip_file_reader.ex
+new file mode 100644
+index 0000000..5add04a
+--- /dev/null
++++ b/lib/pgpex/primitives/skip_file_reader.ex
+@@ -0,0 +1,110 @@
++defmodule Pgpex.Primitives.SkipFileReader do
++  defstruct [io: nil, position: 0, length: 0, positions: []]
++
++  @behaviour Pgpex.Primitives.Behaviours.ReadableFile
++
++  @type t :: %__MODULE__{
++    position: non_neg_integer(),
++    length: non_neg_integer()
++  }
++  @type position :: {non_neg_integer(), non_neg_integer()}
++
++  @spec new(any(), non_neg_integer(), [position()]) :: Pgpex.Primitives.SkipFileReader.t()
++  def new(f, _, positions) do
++    {length, poses} = map_indexes(positions)
++    %__MODULE__{
++      length: length,
++      io: f,
++      positions: poses
++    }
++  end
++
++  @impl true
++  def close(stream) do
++    :file.close(stream.io)
++  end
++
++  def wrap_as_file(stream) do
++    Pgpex.Primitives.Behaviours.ReadableFile.wrap_as_file(__MODULE__, stream)
++  end
++
++  @impl true
++  def binread(%__MODULE__{length: l, position: pos},_) when pos >= l and pos >= 0 do
++    :eof
++  end
++
++  def binread(%__MODULE__{io: f, length: l, position: pos, positions: p} = sfr, len) when len >= 0 do
++    max_read_pos = case ((pos + len) >= l) do
++      false -> pos + len - 1
++      _ -> l - 1
++    end
++    readables = map_reading_indexes(pos, max_read_pos, p)
++    read_data = Enum.reduce(readables, <<>>, fn({start_pos,read_amount}, data) ->
++      :file.position(f, start_pos)
++      data <> IO.binread(f, read_amount)
++    end)
++    {:ok, %__MODULE__{sfr| position: (max_read_pos + 1)}, read_data}
++  end
++
++  @impl true
++  @spec position(Pgpex.Primitives.SkipFileReader.t(), any()) ::
++          {:'error', atom()} |
++          {:ok, Pgpex.Primitives.SkipFileReader.t(), any()}
++  def position(%__MODULE__{position: p} = sfr, :cur) do
++    {:ok, sfr, p}
++  end
++
++  def position(%__MODULE__{} = sfr, :bof) do
++    {:ok, %__MODULE__{sfr | position: 0}, 0}
++  end
++
++  def position(%__MODULE__{length: l}, pos) when pos > l and pos >= 0 do
++    {:error, :einval}
++  end
++
++  def position(%__MODULE__{} = sfr, pos) when pos >= 0 do
++    {:ok, %__MODULE__{sfr | position: pos}, pos}
++  end
++
++  defp map_reading_indexes(read_start, read_end, positions) do
++    start_entry_index = Enum.find_index(positions, fn({s, e, _, _}) ->
++      (s <= read_start) && (e >= read_start)
++    end)
++    end_entry_index = Enum.find_index(positions, fn({s, e, _, _}) ->
++      (s <= read_end) && (e >= read_end)
++    end)
++    position_entries = Enum.slice(positions, start_entry_index..end_entry_index)
++    Enum.map(position_entries, fn(pos) ->
++      map_single_index_for(pos, read_start, read_end)
++    end)
++  end
++
++  defp map_single_index_for(pos_entry, read_s, read_e) do
++    start_idx = pick_start_pos(pos_entry, read_s)
++    end_idx = pick_end_pos(pos_entry, read_e)
++    {start_idx, end_idx - start_idx + 1}
++  end
++
++  defp pick_start_pos({off_s, off_e, f_s, f_e}, read_s) do
++    case (read_s <= off_s) do
++      true -> f_s
++      _ -> (read_s - off_s) + f_s
++    end
++  end
++
++  defp pick_end_pos({off_s, off_e, f_s, f_e}, read_e) do
++    case (read_e >= off_e) do
++      true -> f_e
++      _ -> f_e - (off_e - read_e)
++    end
++  end
++
++  def map_indexes(positions) do
++    poses = List.keysort(positions, 0)
++    {pos_entries, len} = Enum.reduce(poses, {[], 0}, fn({s,e},{col,off}) ->
++         part_len = (e - s) + 1
++         {[{off, part_len + off - 1, s, e}|col], off + part_len}
++       end)
++    {len, Enum.reverse(pos_entries)}
++  end
++end
+diff --git a/lib/pgpex/primitives/zlib_stream.ex b/lib/pgpex/primitives/zlib_stream.ex
+new file mode 100644
+index 0000000..69bf892
+--- /dev/null
++++ b/lib/pgpex/primitives/zlib_stream.ex
+@@ -0,0 +1,225 @@
++defmodule Pgpex.Primitives.ZlibStream do
++  defstruct [
++    skip_file_reader: nil,
++    length: 0,
++    position: 0,
++    buffer: <<>>,
++    buffer_start: 0,
++    buffer_length: 0,
++    z_instance: nil
++  ]
++
++  @behaviour Pgpex.Primitives.Behaviours.ReadableFile
++
++  defp buffer_has(buffer_start, buffer_length, pos) do
++    case (pos < buffer_start) do
++      false -> (pos <= (buffer_start + buffer_length - 1))
++      _ -> false
++    end
++  end
++
++  def transfer_ownership(%__MODULE__{} = zl, pid) do
++    :zlib.set_controlling_process(zl.z_instance, pid)
++  end
++
++  def wrap_as_file(stream) do
++    Pgpex.Primitives.Behaviours.ReadableFile.wrap_as_file(__MODULE__, stream)
++  end
++
++  def close(%__MODULE__{} = zl)  do
++    :zlib.inflateEnd(zl.z_instance)
++    :zlib.close(zl.z_instance)
++  end
++
++  def position(%__MODULE__{position: pos} = zl, :cur) do
++    {:ok, zl, pos}
++  end
++
++  def position(%__MODULE__{} = zl, :bof) do
++    moved_zl = pull_to_start(zl, 0)
++    {:ok, %__MODULE__{moved_zl | position: 0}, 0}
++  end
++
++  def position(%__MODULE__{length: l} = zl, pos) when (pos <= l) do
++    {:ok, %__MODULE__{zl | position: pos}, pos}
++  end
++
++  def position(%__MODULE__{length: l}, pos) when (pos > l) do
++    {:error, :ebadarg}
++  end
++
++  def binread(%__MODULE__{position: pos, length: l}, _) when (pos >= l) and pos >= 0 do
++    :eof
++  end
++
++  def binread(%__MODULE__{position: pos, length: l} = zl, read_length) when (pos >= 0) do
++    suggested_end_offset = pos + read_length - 1
++    end_index = case (suggested_end_offset >= l) do
++                  false -> suggested_end_offset
++                  _ -> l - 1
++                end
++    z_ended = pull_to_range(zl, pos, end_index)
++    read_data = extract_range(z_ended, pos, end_index)
++    {:ok, %__MODULE__{z_ended | position: (end_index + 1)}, read_data}
++  end
++
++  defp pull_to_start(%__MODULE__{} = zl, start_pos) do
++    re_initialized_zl = case (start_pos < zl.buffer_start) do
++      false -> zl
++      _ -> reopen_zl(zl)
++    end
++    pull_until_started(re_initialized_zl, start_pos)
++  end
++
++  defp pull_to_range(%__MODULE__{} = zl, start_pos, end_pos) do
++    z_started = pull_to_start(zl, start_pos)
++    pull_until_ended(z_started, end_pos)
++  end
++
++  defp extract_range(%__MODULE__{} = zl, start_pos, end_pos) do
++    offset_from_start = start_pos - zl.buffer_start
++    difference_from_end = ((zl.buffer_start + zl.buffer_length - 1) - end_pos)
++    :binary.part(zl.buffer, offset_from_start, zl.buffer_length - offset_from_start - difference_from_end)
++  end
++
++  def reopen_zl(%__MODULE__{} = zl) do
++    :zlib.inflateEnd(zl.z_instance)
++    :zlib.close(zl.z_instance)
++    z_i = :zlib.open()
++    :zlib.inflateInit(z_i)
++    {:ok, new_skr, _} = Pgpex.Primitives.SkipFileReader.position(zl.skip_file_reader, 0)
++    %__MODULE__{zl |
++    z_instance: z_i,
++    position: 0,
++    buffer: <<>>,
++    buffer_length: 0,
++    skip_file_reader: new_skr
++  }
++  end
++
++  defp pull_until_started(%__MODULE__{buffer_start: bs, buffer_length: bl} = zl, pos) when (pos >= bs) and (pos <= (bs + bl - 1)) do
++    zl
++  end
++
++  defp pull_until_started(%__MODULE__{} = zl, pos) do
++    {new_skr, z, new_buff, buffer_start, buffer_length} =  pull_buffer(
++      zl.skip_file_reader,
++      zl.z_instance,
++      zl.buffer,
++      zl.buffer_start,
++      zl.buffer_length
++    )
++    case buffer_has(buffer_start, buffer_length, pos) do
++      false ->
++        pull_until_started(
++          %__MODULE__{
++            zl |
++            skip_file_reader: new_skr,
++            buffer: <<>>,
++            buffer_start: buffer_start + buffer_length,
++            buffer_length: 0
++          },
++          pos
++        )
++      _ ->
++        %__MODULE__{
++          zl |
++            skip_file_reader: new_skr,
++            buffer: new_buff,
++            buffer_start: buffer_start,
++            buffer_length: buffer_length
++        }
++    end
++  end
++
++  defp pull_until_ended(%__MODULE__{buffer_start: bs, buffer_length: bl} = zl, pos) when (pos >= bs) and (pos <= (bs + bl - 1)) do
++    zl
++  end
++
++  defp pull_until_ended(%__MODULE__{} = zl, pos) do
++    {new_skr, z, new_buff, buffer_start, buffer_length} =  pull_buffer(
++      zl.skip_file_reader,
++      zl.z_instance,
++      zl.buffer,
++      zl.buffer_start,
++      zl.buffer_length
++    )
++    case buffer_has(buffer_start, buffer_length, pos) do
++      false ->
++        pull_until_ended(
++          %__MODULE__{
++            zl |
++            skip_file_reader: new_skr,
++            buffer: new_buff,
++            buffer_start: buffer_start,
++            buffer_length: buffer_length
++          },
++          pos
++        )
++      _ ->
++        %__MODULE__{
++          zl |
++            skip_file_reader: new_skr,
++            buffer: new_buff,
++            buffer_start: buffer_start,
++            buffer_length: buffer_length
++        }
++    end
++  end
++
++  defp pull_buffer(skr, z, current_buffer, buffer_start, buffer_length) do
++    case Pgpex.Primitives.SkipFileReader.binread(skr, 4096) do
++      {:ok, new_skr, <<data::binary>>} ->
++        case :zlib.safeInflate(z, data) do
++          {:continue, [<<>>]} ->
++            pull_buffer(new_skr, z, current_buffer, buffer_start, buffer_length)
++          {:continue, [c_output]} ->
++            {new_skr, z, current_buffer <> c_output, buffer_start, buffer_length + byte_size(c_output)}
++          {:finished, [output]} ->
++            {new_skr, z, current_buffer <> output, buffer_start, buffer_length + byte_size(output)}
++          {:finished, []} ->
++            pull_buffer(new_skr, z, current_buffer, buffer_start, buffer_length)
++        end
++      :eof -> {skr, z, current_buffer, buffer_start, buffer_length}
++      a -> {:error, a}
++    end
++  end
++
++  defp read_length(reader) do
++    :ok = :zlib.inflateInit(reader.z_instance)
++    stream = Stream.unfold({:run_z, reader.z_instance, reader.skip_file_reader, <<>>}, fn(acc) ->
++      zlib_unfold_loop(acc)
++    end)
++    total_length = Enum.reduce(stream, 0, fn(e, acc) ->
++      acc + byte_size(e)
++    end)
++    new_zl = reopen_zl(reader)
++    %__MODULE__{new_zl | length: total_length}
++  end
++
++  def create_reader_stream(skr) do
++    z_i = :zlib.open()
++    new_zl = %__MODULE__{skip_file_reader: skr, z_instance: z_i}
++    {:ok, read_length(new_zl)}
++  end
++
++  defp zlib_unfold_loop({:run_z, z, skr, current_data}) do
++    case Pgpex.Primitives.SkipFileReader.binread(skr, 4096) do
++      {:ok, new_skr, <<data::binary>>} ->
++        case :zlib.safeInflate(z, data) do
++          {:continue, []} -> zlib_unfold_loop({:run_z, z, new_skr, current_data})
++          {:continue, [c_output]} -> {current_data <> c_output, {:run_z, z, new_skr, <<>>}}
++          {:finished, [output]} -> {current_data <> output, {:run_z, z, new_skr, <<>>}}
++          {:finished, []} -> zlib_unfold_loop({:run_z, z, new_skr, current_data})
++        end
++      :eof ->
++        {current_data, :stop}
++      a ->
++        nil
++    end
++  end
++
++  defp zlib_unfold_loop(:stop) do
++    nil
++  end
++end
+diff --git a/lib/pgpex/rsa/session_key_decryptor.ex b/lib/pgpex/rsa/session_key_decryptor.ex
+deleted file mode 100644
+index d9ea922..0000000
+--- a/lib/pgpex/rsa/session_key_decryptor.ex
++++ /dev/null
+@@ -1,7 +0,0 @@
+-defmodule Pgpex.Rsa.SessionKeyDecryptor do
+-  def decrypt_session_key(session_key_binary, rsa_private_key) do
+-
+-  end
+-
+-
+-end
+diff --git a/lib/pgpex/session_decryptors/aes.ex b/lib/pgpex/session_decryptors/aes.ex
+new file mode 100644
+index 0000000..19900db
+--- /dev/null
++++ b/lib/pgpex/session_decryptors/aes.ex
+@@ -0,0 +1,93 @@
++defmodule Pgpex.SessionDecryptors.Aes do
++
++  use Bitwise
++
++  alias Pgpex.Primitives.MdcCalcState
++  alias Pgpex.Primitives.SkipFileReader
++
++  import Pgpex.Primitives.IOUtils
++
++  def create_session_reader(f, key, length, positions) do
++    sfr = SkipFileReader.new(f, length, positions)
++    Pgpex.SessionDecryptors.AesSessionStream.new(
++      Pgpex.Primitives.Behaviours.ReadableFile.wrap_as_file(SkipFileReader, sfr),
++      key,
++      length
++    )
++  end
++
++  def verify_mdc(f, key, len, [{ds, fde}|others]) do
++    with({:ok, iv} <- read_initial_iv(f, ds)) do
++      sfr = SkipFileReader.new(f, len - 16, [{ds + 16, fde}|others])
++      hs = :crypto.hash_init(:sha)
++      d_iv = decrypt_block(<<0::big-unsigned-integer-size(128)>>, key, iv)
++      hs_start = :crypto.hash_update(hs, d_iv)
++      mdc_state = %MdcCalcState{
++        last_iv: iv,
++        key: key,
++        hash_state: hs_start,
++        skip_file_reader: sfr,
++        last_non_hash_data_position: len - 21
++      }
++      read_next_hash_part(mdc_state)
++    end
++  end
++
++  defp read_next_hash_part(%MdcCalcState{} = mcs) do
++    case SkipFileReader.binread(mcs.skip_file_reader, 16) do
++      {:ok, sfr, <<data::binary-size(16)>>} ->
++        new_bytes = decrypt_block(mcs.last_iv, mcs.key, data)
++        read_next_hash_part(
++          MdcCalcState.add_new_iv_and_bytes(
++          mcs,
++          data,
++          new_bytes,
++          sfr
++         )
++        )
++      {:ok, _, <<data::binary>>} ->
++        new_bytes = decrypt_block(mcs.last_iv, mcs.key, data)
++        MdcCalcState.add_new_bytes_and_finish(
++          mcs,
++          new_bytes
++        )
++      :eof -> MdcCalcState.finish(mcs)
++      a -> {:error, {:reading_body_for_mdc_check_error, a}}
++    end
++  end
++
++  def read_and_verify_first_block(f, start_pos, key) do
++    with {:ok, iv} <- read_initial_iv(f, start_pos),
++         {:ok, f_block} <- read_first_block_for_verification(f) do
++      <<_::binary-size(14),iv_check_bytes::binary-size(2)>> = decrypt_block(<<0::big-unsigned-integer-size(128)>>, key, iv)
++      <<session_check_bytes::binary-size(2),_::binary>> = decrypt_block(iv, key, f_block)
++      case iv_check_bytes do
++        ^session_check_bytes -> :ok
++        _ -> {:error, {:session_iv_check_mismatch, iv_check_bytes, session_check_bytes}}
++      end
++    end
++  end
++
++  defp read_initial_iv(f, start_pos) do
++    with (:ok <- seek_or_error(f, start_pos, :iv_seek_error)) do
++      binread_match(f, 16, :eof_reading_iv, :iv_too_short) do
++        <<read_iv::binary-size(16)>> -> {:ok, read_iv}
++      end
++    end
++  end
++
++  defp read_first_block_for_verification(f) do
++    binread_match(f, 16, :eof_reading_first_block, :first_block_too_short) do
++      <<read_first_block::binary-size(16)>> -> {:ok, read_first_block}
++    end
++  end
++
++  def decrypt_block(iv, key, cyphertext) do
++    ct_size = byte_size(cyphertext)
++    <<ctext_int::big-unsigned-integer-size(128)>> = cyphertext <> :binary.copy(<<0>>, 16 - ct_size)
++    <<before_ct_apply_int::big-unsigned-integer-size(128)>> = :crypto.block_encrypt(:aes_ecb, key, iv)
++    xored = Bitwise.bxor(before_ct_apply_int, ctext_int)
++    :binary.part(<<xored::big-unsigned-integer-size(128)>>, 0, ct_size)
++  end
++
++end
+diff --git a/lib/pgpex/session_decryptors/aes_session_stream.ex b/lib/pgpex/session_decryptors/aes_session_stream.ex
+new file mode 100644
+index 0000000..3781623
+--- /dev/null
++++ b/lib/pgpex/session_decryptors/aes_session_stream.ex
+@@ -0,0 +1,116 @@
++defmodule Pgpex.SessionDecryptors.AesSessionStream do
++
++  @block_size 16
++  @begin_offset 18 # For IVish CBC stuff + 2 check bytes
++  @end_offset 22  # For SHA1 MDC
++
++  @behaviour Pgpex.Primitives.Behaviours.ReadableFile
++
++  defstruct [
++    io: nil,
++    start_data_position: 0,
++    end_data_position: 0,
++    key: nil,
++    position: 0
++  ]
++
++  def new(f, key, len) do
++    start_data_pos = @begin_offset
++    end_data_pos = len - @end_offset - @begin_offset - 1
++    %__MODULE__{
++      io: f,
++      key: key,
++      start_data_position: start_data_pos,
++      end_data_position: end_data_pos
++    }
++  end
++
++  def position(%__MODULE__{position: pos} = sfr, :cur) do
++    {:ok, sfr, pos}
++  end
++
++  def position(%__MODULE__{} = sfr, :bof) do
++    {:ok, %__MODULE__{sfr | position: 0}, 0}
++  end
++
++  def position(%__MODULE__{end_data_position: l} = sfr, :eof) do
++    {:ok, %__MODULE__{sfr | position: l + 1}, l + 1}
++  end
++
++  def position(%__MODULE__{end_data_position: l}, pos) when pos > l and pos >= 0 do
++    {:error, :einval}
++  end
++
++  def position(%__MODULE__{} = sfr, pos) when pos >= 0 do
++    {:ok, %__MODULE__{sfr | position: pos}, pos}
++  end
++
++  def close(%__MODULE__{io: f}) do
++    :file.close(f)
++  end
++
++  def binread(%__MODULE__{end_data_position: ed_pos, position: pos},_) when pos > ed_pos do
++    :eof
++  end
++
++  def binread(%__MODULE__{io: f, key: key, position: pos, end_data_position: edp} = rec,read_len) when read_len > 0 do
++    read_positions(rec, f, key, pos, edp, read_len)
++  end
++
++  defp map_positions_for_read_byte(idx) do
++    f_read_index = idx + @begin_offset
++    {b_num, b_index} = block_indexes_for(idx)
++    {f_read_index, b_num, b_index}
++  end
++
++  defp block_indexes_for(pos) do
++    block_num = div(pos + @begin_offset, @block_size)
++    byte_num = rem(pos + @begin_offset, @block_size)
++    {block_num, byte_num}
++  end
++
++  defp position_for_block(block_index) do
++    block_index * @block_size
++  end
++
++  defp read_positions(rec, f, key, current_idx, last_index, read_len) do
++    suggested_end = current_idx + read_len - 1
++    end_idx = case suggested_end >= last_index do
++      false -> suggested_end
++      _ -> last_index
++    end
++    {_, first_block_num, first_block_index} = map_positions_for_read_byte(current_idx)
++    {_, last_block_num, last_block_index} = map_positions_for_read_byte(end_idx)
++    file_begin_read_offset = position_for_block(first_block_num - 1)
++    # OK while @end_offset > @block_size
++    file_end_read_offset = position_for_block(last_block_num + 1) - 1
++    read_length = file_end_read_offset - file_begin_read_offset + 1
++    new_pos = end_idx + 1
++    {:ok, _} = :file.position(f, file_begin_read_offset)
++    case IO.binread(f, read_length) do
++      <<data::binary>> ->
++        decrypted_data = process_decryptable_bytes(data, key, first_block_index, last_block_index)
++        {:ok, %__MODULE__{rec | position: new_pos}, decrypted_data}
++      :eof -> :eof
++      a -> {:error, a}
++    end
++  end
++
++  defp process_decryptable_bytes(data, key, first_block_index, last_block_index) do
++    decoded_data = run_decode(key, data, <<>>)
++    :binary.part(decoded_data, first_block_index, byte_size(decoded_data) - first_block_index - (@block_size - last_block_index - 1))
++  end
++
++  defp run_decode(_, <<>>, data_so_far) do
++    data_so_far
++  end
++
++  defp run_decode(_, <<_::binary-size(16)>>, data_so_far) do
++    data_so_far
++  end
++
++  defp run_decode(key, <<iv::binary-size(16), data::binary-size(16), rest::binary>>, data_so_far) do
++    decoded = Pgpex.SessionDecryptors.Aes.decrypt_block(iv, key, data)
++    run_decode(key, <<data::binary-size(16), rest::binary>>, data_so_far <> decoded)
++  end
++end
+diff --git a/lib/pgpex/session_encryptors/aes.ex b/lib/pgpex/session_encryptors/aes.ex
+new file mode 100644
+index 0000000..67080df
+--- /dev/null
++++ b/lib/pgpex/session_encryptors/aes.ex
+@@ -0,0 +1,57 @@
++defmodule Pgpex.SessionEncryptors.Aes do
++  use Bitwise
++
++  def generate_iv_for(key) do
++    iv_bytes = :crypto.strong_rand_bytes(16)
++    case iv_bytes do
++      ^key -> generate_iv_for(key)
++      _ -> iv_bytes
++    end
++  end
++
++  def init_for(key) do
++    hs = :crypto.hash_init(:sha)
++    iv = generate_iv_for(key)
++    data_prefix = :binary.part(iv, byte_size(iv) - 2, 2)
++    h_update = :crypto.hash_update(hs, iv <> data_prefix)
++    first_block = encrypt_block(<<0::big-integer-unsigned-size(128)>>, key, iv)
++    {
++      first_block,
++      data_prefix,
++      h_update,
++      &encrypt_for_buffer/4,
++      &finalize_encryption/4
++    }
++  end
++
++  def encrypt_for_buffer(buffer, new_data, iv, key) do
++    new_bin = buffer <> new_data
++    chomp_me(new_bin, iv, key, <<>>)
++  end
++
++  def finalize_encryption(buffer, hash, iv, key) do
++    hash_bytes = :crypto.hash_final(hash)
++    {new_iv, remain, to_write} = chomp_me(buffer <> hash_bytes, iv, key, <<>>)
++    case remain do
++      <<>> -> to_write
++      _ -> to_write <> encrypt_block(new_iv, key, remain)
++    end
++  end
++
++  def encrypt_block(iv, key, plain_text) do
++    ct_size = byte_size(plain_text)
++    <<ctext_int::big-unsigned-integer-size(128)>> = plain_text <> :binary.copy(<<0>>, 16 - ct_size)
++    <<before_ct_apply_int::big-unsigned-integer-size(128)>> = :crypto.block_encrypt(:aes_ecb, key, iv)
++    xored = Bitwise.bxor(before_ct_apply_int, ctext_int)
++    :binary.part(<<xored::big-unsigned-integer-size(128)>>, 0, ct_size)
++  end
++
++  defp chomp_me(<<eatable::binary-size(16), rest::binary>>, iv, key, result) do
++    writable_block = encrypt_block(iv, key, eatable)
++    chomp_me(rest, writable_block, key, result <> writable_block)
++  end
++
++  defp chomp_me(<<left::binary>>, iv, _, result) do
++    {iv, left, result}
++  end
++end
+diff --git a/lib/pgpex/session_key_decryptor.ex b/lib/pgpex/session_key_decryptor.ex
+new file mode 100644
+index 0000000..afd51b4
+--- /dev/null
++++ b/lib/pgpex/session_key_decryptor.ex
+@@ -0,0 +1,13 @@
++defmodule Pgpex.SessionKeyDecryptor do
++  def decrypt_session_key({:rsa, _}, key, data) when is_binary(data) do
++    decrypt_rsa_session_key(key, data)
++  end
++
++  defp decrypt_rsa_session_key(rsa_private_key, data) when is_binary(data) do
++    try do
++      {:ok, :public_key.decrypt_private(data, rsa_private_key, [{:rsa_padding, :rsa_pkcs1_padding}])}
++    rescue
++      e -> {:error, {:session_key_decryption_error, e}}
++    end
++  end
++end
+diff --git a/lib/pgpex/session_key_encryptor.ex b/lib/pgpex/session_key_encryptor.ex
+new file mode 100644
+index 0000000..f8d8f50
+--- /dev/null
++++ b/lib/pgpex/session_key_encryptor.ex
+@@ -0,0 +1,17 @@
++defmodule Pgpex.SessionKeyEncryptor do
++  def encrypt_session_key({:rsa, _}, key, data) when is_binary(data) do
++    encrypt_rsa_session_key(key, data)
++  end
++
++  def encrypt_session_key(kt, key, data) when is_binary(data) do
++    {:error, {:unsupported_public_key_type, kt, key}}
++  end
++
++  defp encrypt_rsa_session_key(rsa_private_key, data) when is_binary(data) do
++    try do
++      {:ok, :public_key.encrypt_public(data, rsa_private_key, [{:rsa_padding, :rsa_pkcs1_padding}])}
++    rescue
++      e -> {:error, {:session_key_encryption_error, e}}
++    end
++  end
++end
+diff --git a/mix.exs b/mix.exs
+index 3c1f425..c2780f4 100644
+--- a/mix.exs
++++ b/mix.exs
+@@ -7,7 +7,14 @@ defmodule Pgpex.MixProject do
+       version: "0.1.0",
+       elixir: "~> 1.6",
+       start_permanent: Mix.env() == :prod,
+-      deps: deps()
++      deps: deps(),
++      dialyzer: [
++        flags: [
++          :unmatched_returns,
++          :overspecs,
++          :error_handling
++        ]
++      ]
+     ]
+   end
+ 
+@@ -21,6 +28,7 @@ defmodule Pgpex.MixProject do
+   # Run "mix help deps" to learn about dependencies.
+   defp deps do
+     [
++      {:dialyxir, "~> 0.5", only: [:dev], runtime: false}
+       # {:dep_from_hexpm, "~> 0.3.0"},
+       # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"},
+     ]
+diff --git a/test/pgpex/armor/reader_test.exs b/test/pgpex/armor/reader_test.exs
+index 8f80bbf..e8e85c0 100644
+--- a/test/pgpex/armor/reader_test.exs
++++ b/test/pgpex/armor/reader_test.exs
+@@ -6,19 +6,19 @@ defmodule Pgpex.Armor.ReaderTest do
+     f_name = "test/test_data/pub_and_private_key.asc"
+     {:ok, f} = :file.open(f_name, [:read, :binary])
+ 
+-    entries = Enum.map(Pgpex.Armor.Reader.initialize(f), fn({:ok, {a,b,c}}) ->
++    entries = Enum.map(Pgpex.Armor.Reader.initialize(f), fn({:ok, {_a,b,c}}) ->
++      {:ok, _} = Pgpex.Armor.B64StreamReader.verify_crc24(c, b)
+       {:ok, new_reader} = Pgpex.Armor.B64StreamReader.reopen_as_new_file(c, f_name)
+-      {a, b, new_reader}
++      new_reader
+     end)
+     :file.close(f)
+-    Enum.map(entries, fn({_, _, c}) ->
++    Enum.map(entries, fn(c) ->
+       :file.position(c, :bof)
+       {:ok, result} = Pgpex.PacketReader.read_headers(c)
+ 
+-      parsed = Enum.map(result, fn(h) ->
+-        Pgpex.PacketReader.parse_packet(c, h)
++      Enum.map(result, fn(h) ->
++        Pgpex.Packet.parse_packet(c, h)
+       end)
+-      #IO.inspect(parsed)
+     end)
+   end
+ 
+@@ -36,7 +36,7 @@ defmodule Pgpex.Armor.ReaderTest do
+       {:ok, result} = Pgpex.PacketReader.read_headers(c)
+ 
+       Enum.map(result, fn(h) ->
+-        Pgpex.PacketReader.parse_packet(c, h)
++        Pgpex.Packet.parse_packet(c, h)
+       end)
+     end)
+ 
+@@ -45,8 +45,8 @@ defmodule Pgpex.Armor.ReaderTest do
+     rsa_pub_packet = Enum.at(pub_key, 0)
+     rsa_priv_packet = Enum.at(priv_key, 0)
+ 
+-    {:public_key, 4, <<92, 121, 129, 46>>, :rsa, :both, rsa_pub_key} = rsa_pub_packet
+-    {:secret_key, 4, <<92, 121, 129, 46>>, :rsa, :both, rsa_priv_key} = rsa_priv_packet
++    %Pgpex.Packets.PublicKey{tag: :public_key, version: 4, key_time: <<92, 121, 129, 46>>, algo_type: :rsa, usage: :both, public_key: rsa_pub_key} = rsa_pub_packet
++    %Pgpex.Packets.SecretKey{tag: :secret_key, version: 4, key_time: <<92, 121, 129, 46>>, algo_type: :rsa, usage: :both, secret_key: rsa_priv_key} = rsa_priv_packet
+     test_text = "FRANK"
+     ct = :public_key.encrypt_public(test_text,rsa_pub_key)
+     ^test_text = :public_key.decrypt_private(ct, rsa_priv_key)
+diff --git a/test/pgpex/packet_reader_test.exs b/test/pgpex/packet_reader_test.exs
+index a863c86..02830e3 100644
+--- a/test/pgpex/packet_reader_test.exs
++++ b/test/pgpex/packet_reader_test.exs
+@@ -79,7 +79,8 @@ defmodule Pgpex.PacketReaderTest do
+     :file.close(out_f)
+ 
+     {:ok, in_f} = :file.open(f_name, [:binary, :read])
+-    {:ok, result} = Pgpex.PacketReader.read_headers(in_f)
++    {:ok, parsed} = Pgpex.PacketReader.read_headers(in_f)
++    5 = Enum.count(parsed)
+     :file.close(in_f)
+     File.rm!(f_name)
+   end
+@@ -93,9 +94,76 @@ defmodule Pgpex.PacketReaderTest do
+ 
+     {:ok, in_f} = :file.open(f_name, [:binary, :read])
+     {:ok, result} = Pgpex.PacketReader.read_headers(in_f)
+-    IO.inspect(result)
+-    parsed = Enum.map(result, fn(h) -> Pgpex.PacketReader.parse_packet(in_f, h) end)
++    parsed = Enum.map(result, fn(h) -> Pgpex.Packet.parse_packet(in_f, h) end)
++    2 = Enum.count(parsed)
+     :file.close(in_f)
+     File.rm!(f_name)
+   end
++
++  test "given a long encrypted file" do
++    f_name = "all_code.asc"
++    {:ok, f} = :file.open(f_name, [:binary, :read])
++    [{_, _, bsr}|_] = Enum.map(Pgpex.Armor.Reader.initialize(f), fn({:ok, {a,b,c}}) ->
++      {:ok, new_reader} = Pgpex.Armor.B64StreamReader.reopen_as_new_file(c, f_name)
++      {a, b, new_reader}
++    end)
++    :file.close(f)
++    :file.position(bsr, :bof)
++    {:ok, headers} = Pgpex.PacketReader.read_headers(bsr)
++    packet_results = Enum.map(headers, fn(h) -> Pgpex.Packet.parse_packet(bsr, h) end)
++    [%Pgpex.Packets.PublicKeyEncryptedSessionKey{} = skp,op] = packet_results
++    key_provider = fn(_,_) ->
++      {:ok, read_rsa_priv_key()}
++    end
++    {:ok, decrypted_session_key} = Pgpex.Packets.PublicKeyEncryptedSessionKey.decrypt_session_key(skp, key_provider)
++    {:ok, :aes_256, key} = (Pgpex.Primitives.SessionKey.decode_session_key(decrypted_session_key))
++    [{ds, _}|_] = op.data_indexes
++    :ok = Pgpex.SessionDecryptors.Aes.read_and_verify_first_block(op.io, ds, key)
++    {:ok, _} = Pgpex.SessionDecryptors.Aes.verify_mdc(op.io, key, op.data_length, op.data_indexes)
++    session_reader = Pgpex.SessionDecryptors.Aes.create_session_reader(
++      op.io,
++      key,
++      op.data_length,
++      op.data_indexes
++    )
++    readable_session_data = Pgpex.Primitives.Behaviours.ReadableFile.wrap_as_file(
++      Pgpex.SessionDecryptors.AesSessionStream,
++      session_reader
++    )
++    {:ok, [compressed_packet|_]} = Pgpex.PacketReader.read_headers(readable_session_data)
++    compressed_packet_data = Pgpex.Packet.parse_packet(readable_session_data, compressed_packet)
++    {:ok, reader_stream} = Pgpex.Packets.CompressedData.create_reader(compressed_packet_data)
++    f_reader_stream = reader_stream.__struct__.wrap_as_file(reader_stream)
++    {:ok, decrypted_packet_data} = Pgpex.PacketReader.read_headers(f_reader_stream)
++    [lit_packet|_] = Enum.map(decrypted_packet_data, fn(pd) ->
++      Pgpex.Packet.parse_packet(f_reader_stream, pd)
++    end)
++    "all_code" = lit_packet.file_name
++    {:ok, _, "diff --git a/.formatter.exs b"} = Pgpex.Primitives.SkipFileReader.binread(lit_packet.reader, 29)
++  end
++
++  defp read_rsa_priv_key() do
++    f_name = "test/test_data/pub_and_private_key.asc"
++    {:ok, f} = :file.open(f_name, [:read, :binary])
++
++    entries = Enum.map(Pgpex.Armor.Reader.initialize(f), fn({:ok, {a,b,c}}) ->
++      {:ok, new_reader} = Pgpex.Armor.B64StreamReader.reopen_as_new_file(c, f_name)
++      {a, b, new_reader}
++    end)
++    :file.close(f)
++    all_entries = Enum.map(entries, fn({_, _, c}) ->
++      :file.position(c, :bof)
++      {:ok, result} = Pgpex.PacketReader.read_headers(c)
++
++      Enum.map(result, fn(h) ->
++        Pgpex.Packet.parse_packet(c, h)
++      end)
++    end)
++
++    priv_key = Enum.at(all_entries, 1)
++    rsa_priv_packet = Enum.at(priv_key, 3)
++
++    %Pgpex.Packets.SecretKey{tag: :secret_subkey, version: 4, key_time: <<92, 121, 129, 46>>, algo_type: :rsa, usage: :both, secret_key: rsa_priv_key} = rsa_priv_packet
++    rsa_priv_key
++  end
+ end
+diff --git a/test/pgpex/packet_writers/public_key_encrypted_session_key_test.exs b/test/pgpex/packet_writers/public_key_encrypted_session_key_test.exs
+new file mode 100644
+index 0000000..ac11ffe
+--- /dev/null
++++ b/test/pgpex/packet_writers/public_key_encrypted_session_key_test.exs
+@@ -0,0 +1,75 @@
++defmodule Pgpex.PacketWriters.PublicKeyEncryptedSessionKeyTest do
++  use ExUnit.Case
++  use Bitwise
++  doctest Pgpex.PacketWriters.PublicKeyEncryptedSessionKey
++
++  test "can encrypt a random aes-256 session key" do
++    k = read_rsa_public_sub_key_packet()
++    pk_algo_identifier = {k.algo_type, k.usage}
++    key_bytes = :crypto.strong_rand_bytes(32)
++    {:ok, packet} = Pgpex.PacketWriters.PublicKeyEncryptedSessionKey.construct_packet(
++      pk_algo_identifier,
++      k.public_key,
++      :aes_256,
++      key_bytes,
++      <<0::unsigned-big-integer-size(64)>>)
++    {:ok, f} = :file.open(packet, [:ram, :binary])
++    {:ok, headers} = Pgpex.PacketReader.read_headers(f)
++    p_results = Enum.map(headers, fn(h) ->
++      Pgpex.Packet.parse_packet(f, h)
++    end)
++    pkesk = Enum.at(p_results, 0)
++    key_provider = fn(_,_) ->
++      {:ok, [read_rsa_priv_key()]}
++    end
++    {:ok, [decrypted_session_key]} = Pgpex.Packets.PublicKeyEncryptedSessionKey.decrypt_session_key(pkesk, key_provider)
++    {:ok, :aes_256, ^key_bytes} = (Pgpex.Primitives.SessionKey.decode_session_key(decrypted_session_key))
++    ep = Enum.at(p_results, 1)
++  end
++
++  defp read_rsa_public_sub_key_packet() do
++    f_name = "test/test_data/pub_and_private_key.asc"
++    {:ok, f} = :file.open(f_name, [:read, :binary])
++
++    entries = Enum.map(Pgpex.Armor.Reader.initialize(f), fn({:ok, {a,b,c}}) ->
++      {:ok, new_reader} = Pgpex.Armor.B64StreamReader.reopen_as_new_file(c, f_name)
++      {a, b, new_reader}
++    end)
++    :file.close(f)
++    all_entries = Enum.map(entries, fn({_, _, c}) ->
++      :file.position(c, :bof)
++      {:ok, result} = Pgpex.PacketReader.read_headers(c)
++
++      Enum.map(result, fn(h) ->
++        Pgpex.Packet.parse_packet(c, h)
++      end)
++    end)
++
++    pub_key = Enum.at(all_entries, 0)
++    Enum.at(pub_key, 3)
++  end
++
++  defp read_rsa_priv_key() do
++    f_name = "test/test_data/pub_and_private_key.asc"
++    {:ok, f} = :file.open(f_name, [:read, :binary])
++
++    entries = Enum.map(Pgpex.Armor.Reader.initialize(f), fn({:ok, {a,b,c}}) ->
++      {:ok, new_reader} = Pgpex.Armor.B64StreamReader.reopen_as_new_file(c, f_name)
++      {a, b, new_reader}
++    end)
++    :file.close(f)
++    all_entries = Enum.map(entries, fn({_, _, c}) ->
++      :file.position(c, :bof)
++      {:ok, result} = Pgpex.PacketReader.read_headers(c)
++
++      Enum.map(result, fn(h) ->
++        Pgpex.Packet.parse_packet(c, h)
++      end)
++    end)
++
++    priv_key = Enum.at(all_entries, 1)
++    rsa_priv_packet = Enum.at(priv_key, 3)
++    %Pgpex.Packets.SecretKey{tag: :secret_subkey, version: 4, key_time: <<92, 121, 129, 46>>, algo_type: :rsa, usage: :both, secret_key: rsa_priv_key} = rsa_priv_packet
++    rsa_priv_key
++  end
++end
+diff --git a/test/pgpex/packet_writers/symmetrically_encrypted_and_integrity_protected_data_test.exs b/test/pgpex/packet_writers/symmetrically_encrypted_and_integrity_protected_data_test.exs
+new file mode 100644
+index 0000000..9e48205
+--- /dev/null
++++ b/test/pgpex/packet_writers/symmetrically_encrypted_and_integrity_protected_data_test.exs
+@@ -0,0 +1,112 @@
++defmodule Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedDataTest do
++  use ExUnit.Case
++  use Bitwise
++  doctest Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedData
++
++  test "can encrypt a random aes-256 session key based packet" do
++    f_name = "test/test_data/test_encrypting_session_data.bin"
++    {:ok, written_message_file} = :file.open(f_name, [:write, :binary])
++    k = read_rsa_public_sub_key_packet()
++    pk_algo_identifier = {k.algo_type, k.usage}
++    key_bytes = :crypto.strong_rand_bytes(32)
++    {:ok, packet} = Pgpex.PacketWriters.PublicKeyEncryptedSessionKey.construct_packet(
++      pk_algo_identifier,
++      k.public_key,
++      :aes_256,
++      key_bytes,
++      <<0::unsigned-big-integer-size(64)>>)
++    IO.binwrite(written_message_file, packet)
++
++    the_test_string = """
++    SOME REALLY LONG STRING THAT I WANT YOU TO TRY AND READ
++    """
++    w_1 = Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedData.initialize(
++      {:aes, key_bytes},
++      written_message_file,
++      byte_size(the_test_string)
++    )
++    w_2 = Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedData.write(
++      w_1,
++      the_test_string
++    )
++    Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedData.finalize(
++      w_2
++    )
++    :file.close(written_message_file)
++    {:ok, f} = :file.open(f_name, [:read, :binary])
++    {:ok, headers} = Pgpex.PacketReader.read_headers(f)
++    p_results = Enum.map(headers, fn(h) ->
++      Pgpex.Packet.parse_packet(f, h)
++    end)
++    pkesk = Enum.at(p_results, 0)
++    key_provider = fn(_,_) ->
++      {:ok, [read_rsa_priv_key()]}
++    end
++    {:ok, [decrypted_session_key]} = Pgpex.Packets.PublicKeyEncryptedSessionKey.decrypt_session_key(pkesk, key_provider)
++    {:ok, :aes_256, ^key_bytes} = (Pgpex.Primitives.SessionKey.decode_session_key(decrypted_session_key))
++    op = Enum.at(p_results, 1)
++    [{ds, _}|_] = op.data_indexes
++    :ok = Pgpex.SessionDecryptors.Aes.read_and_verify_first_block(op.io, ds, key_bytes)
++    {:ok, _} = Pgpex.SessionDecryptors.Aes.verify_mdc(op.io, key_bytes, op.data_length, op.data_indexes)
++    session_reader = Pgpex.SessionDecryptors.Aes.create_session_reader(
++      op.io,
++      key_bytes,
++      op.data_length,
++      op.data_indexes
++    )
++    readable_session_data = Pgpex.Primitives.Behaviours.ReadableFile.wrap_as_file(
++      Pgpex.SessionDecryptors.AesSessionStream,
++      session_reader
++    )
++    ^the_test_string = IO.binread(readable_session_data, :all)
++    :file.close(readable_session_data)
++    :file.close(f)
++    File.rm!(f_name)
++  end
++
++  defp read_rsa_public_sub_key_packet() do
++    f_name = "test/test_data/pub_and_private_key.asc"
++    {:ok, f} = :file.open(f_name, [:read, :binary])
++
++    entries = Enum.map(Pgpex.Armor.Reader.initialize(f), fn({:ok, {a,b,c}}) ->
++      {:ok, new_reader} = Pgpex.Armor.B64StreamReader.reopen_as_new_file(c, f_name)
++      {a, b, new_reader}
++    end)
++    :file.close(f)
++    all_entries = Enum.map(entries, fn({_, _, c}) ->
++      :file.position(c, :bof)
++      {:ok, result} = Pgpex.PacketReader.read_headers(c)
++
++      Enum.map(result, fn(h) ->
++        Pgpex.Packet.parse_packet(c, h)
++      end)
++    end)
++
++    pub_key = Enum.at(all_entries, 0)
++    Enum.at(pub_key, 3)
++  end
++
++  defp read_rsa_priv_key() do
++    f_name = "test/test_data/pub_and_private_key.asc"
++    {:ok, f} = :file.open(f_name, [:read, :binary])
++
++    entries = Enum.map(Pgpex.Armor.Reader.initialize(f), fn({:ok, {a,b,c}}) ->
++      {:ok, new_reader} = Pgpex.Armor.B64StreamReader.reopen_as_new_file(c, f_name)
++      {a, b, new_reader}
++    end)
++    :file.close(f)
++    all_entries = Enum.map(entries, fn({_, _, c}) ->
++      :file.position(c, :bof)
++      {:ok, result} = Pgpex.PacketReader.read_headers(c)
++
++      Enum.map(result, fn(h) ->
++        Pgpex.Packet.parse_packet(c, h)
++      end)
++    end)
++
++    priv_key = Enum.at(all_entries, 1)
++    rsa_priv_packet = Enum.at(priv_key, 3)
++    %Pgpex.Packets.SecretKey{tag: :secret_subkey, version: 4, key_time: <<92, 121, 129, 46>>, algo_type: :rsa, usage: :both, secret_key: rsa_priv_key} = rsa_priv_packet
++    rsa_priv_key
++  end
++end
+diff --git a/test/pgpex/packets/public_key_encrypted_session_key_test.exs b/test/pgpex/packets/public_key_encrypted_session_key_test.exs
+new file mode 100644
+index 0000000..5cf20ba
+--- /dev/null
++++ b/test/pgpex/packets/public_key_encrypted_session_key_test.exs
+@@ -0,0 +1,78 @@
++defmodule Pgpex.Packets.PublicKeyEncryptedSessionKeyTest do
++  use ExUnit.Case
++  use Bitwise
++  doctest Pgpex.Packets.PublicKeyEncryptedSessionKey
++
++  test "it can decrypt the private key in a simple message" do
++    f_name = "test/test_data/simple_message.asc"
++    {:ok, f} = :file.open(f_name, [:read, :binary])
++
++    entries = Enum.map(Pgpex.Armor.Reader.initialize(f), fn({:ok, {a,b,c}}) ->
++      {:ok, new_reader} = Pgpex.Armor.B64StreamReader.reopen_as_new_file(c, f_name)
++      {a, b, new_reader}
++    end)
++    :file.close(f)
++    parsed_files = Enum.map(entries, fn({_, _, c}) ->
++      :file.position(c, :bof)
++      {:ok, result} = Pgpex.PacketReader.read_headers(c)
++
++      Enum.map(result, fn(h) ->
++        Pgpex.Packet.parse_packet(c, h)
++      end)
++    end)
++    [first_message|_] = parsed_files
++    [%Pgpex.Packets.PublicKeyEncryptedSessionKey{} = skp,op] = first_message
++    key_provider = fn(_,_) ->
++      {:ok, [read_rsa_priv_key()]}
++    end
++    {:ok, [decrypted_session_key]} = Pgpex.Packets.PublicKeyEncryptedSessionKey.decrypt_session_key(skp, key_provider)
++    {:ok, :aes_256, key} = (Pgpex.Primitives.SessionKey.decode_session_key(decrypted_session_key))
++    [{ds, _}|_] = op.data_indexes
++    :ok = Pgpex.SessionDecryptors.Aes.read_and_verify_first_block(op.io, ds, key)
++    {:ok, _} = Pgpex.SessionDecryptors.Aes.verify_mdc(op.io, key, op.data_length, op.data_indexes)
++    session_reader = Pgpex.SessionDecryptors.Aes.create_session_reader(
++      op.io,
++      key,
++      op.data_length,
++      op.data_indexes
++    )
++    readable_session_data = Pgpex.Primitives.Behaviours.ReadableFile.wrap_as_file(
++      Pgpex.SessionDecryptors.AesSessionStream,
++      session_reader
++    )
++    {:ok, [compressed_packet|_]} = Pgpex.PacketReader.read_headers(readable_session_data)
++    compressed_packet_data = Pgpex.Packet.parse_packet(readable_session_data, compressed_packet)
++    {:ok, reader_stream} = Pgpex.Packets.CompressedData.create_reader(compressed_packet_data)
++    f_reader_stream = reader_stream.__struct__.wrap_as_file(reader_stream)
++    {:ok, decrypted_packet_data} = Pgpex.PacketReader.read_headers(f_reader_stream)
++    [lit_packet|_] = Enum.map(decrypted_packet_data, fn(pd) ->
++      Pgpex.Packet.parse_packet(f_reader_stream, pd)
++    end)
++    "mix.exs" = lit_packet.file_name
++    {:ok, _, "defmodule Pgpex.MixProject do"} = Pgpex.Primitives.SkipFileReader.binread(lit_packet.reader, 29)
++  end
++
++  defp read_rsa_priv_key() do
++    f_name = "test/test_data/pub_and_private_key.asc"
++    {:ok, f} = :file.open(f_name, [:read, :binary])
++
++    entries = Enum.map(Pgpex.Armor.Reader.initialize(f), fn({:ok, {a,b,c}}) ->
++      {:ok, new_reader} = Pgpex.Armor.B64StreamReader.reopen_as_new_file(c, f_name)
++      {a, b, new_reader}
++    end)
++    :file.close(f)
++    all_entries = Enum.map(entries, fn({_, _, c}) ->
++      :file.position(c, :bof)
++      {:ok, result} = Pgpex.PacketReader.read_headers(c)
++
++      Enum.map(result, fn(h) ->
++        Pgpex.Packet.parse_packet(c, h)
++      end)
++    end)
++
++    priv_key = Enum.at(all_entries, 1)
++    rsa_priv_packet = Enum.at(priv_key, 3)
++    %Pgpex.Packets.SecretKey{tag: :secret_subkey, version: 4, key_time: <<92, 121, 129, 46>>, algo_type: :rsa, usage: :both, secret_key: rsa_priv_key} = rsa_priv_packet
++    rsa_priv_key
++  end
++end
+diff --git a/test/pgpex/primitives/crc24_test.exs b/test/pgpex/primitives/crc24_test.exs
+new file mode 100644
+index 0000000..c8765ac
+--- /dev/null
++++ b/test/pgpex/primitives/crc24_test.exs
+@@ -0,0 +1,29 @@
++defmodule Pgpex.Primitives.Crc24Test do
++  use ExUnit.Case
++  doctest Pgpex.Primitives.Crc24
++
++  test "simple crc check" do
++     crc24_test("a", 0xf25713)
++  end
++
++  test "longer crc check" do
++    crc24_test("abc", 0xba1c7b)
++  end
++
++  test "very long crc check" do
++    crc24_test(
++      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
++      0x4662cd
++    )
++  end
++
++  defp crc24_test(input, expected) do
++    register = Pgpex.Primitives.Crc24.init_register
++    <<0::unsigned-big-integer-size(24)>> = (
++      register
++        |> Pgpex.Primitives.Crc24.add(input)
++        |> Pgpex.Primitives.Crc24.add(<<expected::unsigned-big-integer-size(24)>>)
++    )
++  end
++
++end
+diff --git a/test/pgpex/primitives/mpi_test.exs b/test/pgpex/primitives/mpi_test.exs
+new file mode 100644
+index 0000000..a5c9538
+--- /dev/null
++++ b/test/pgpex/primitives/mpi_test.exs
+@@ -0,0 +1,47 @@
++defmodule Pgpex.Primitives.MpiTest do
++  use ExUnit.Case
++  doctest Pgpex.Primitives.Mpi
++
++  test "encodes 521 properly" do
++    <<
++      0::unsigned-big-integer-size(8),
++      10::unsigned-big-integer-size(8),
++      2::unsigned-big-integer-size(8),
++      9::unsigned-big-integer-size(8)
++    >> = Pgpex.Primitives.Mpi.encode_mpi(521)
++  end
++
++  test "encodes 520 properly" do
++    <<
++      0::unsigned-big-integer-size(8),
++      1::unsigned-big-integer-size(8),
++      1::unsigned-big-integer-size(8)
++    >> = Pgpex.Primitives.Mpi.encode_mpi(1)
++  end
++
++  test "encodes binary 1 properly" do
++    <<
++      0::unsigned-big-integer-size(8),
++      1::unsigned-big-integer-size(8),
++      1::unsigned-big-integer-size(8)
++    >> = Pgpex.Primitives.Mpi.encode_mpi(<<1::unsigned-big-integer-size(16)>>)
++  end
++
++  test "encodes binary 256 properly" do
++    <<
++      0::unsigned-big-integer-size(8),
++      9::unsigned-big-integer-size(8),
++      1::unsigned-big-integer-size(8),
++      0::unsigned-big-integer-size(8)
++    >> = Pgpex.Primitives.Mpi.encode_mpi(<<256::unsigned-big-integer-size(16)>>)
++  end
++
++  test "encodes binary 520 properly" do
++    <<
++      0::unsigned-big-integer-size(8),
++      10::unsigned-big-integer-size(8),
++      2::unsigned-big-integer-size(8),
++      9::unsigned-big-integer-size(8)
++    >> = Pgpex.Primitives.Mpi.encode_mpi(<<521::unsigned-big-integer-size(16)>>)
++  end
++end
+diff --git a/test/test_data/simple_message.asc b/test/test_data/simple_message.asc
+new file mode 100644
+index 0000000..f9eb232
+--- /dev/null
++++ b/test/test_data/simple_message.asc
+@@ -0,0 +1,23 @@
++-----BEGIN PGP MESSAGE-----
++
++hQIMA+jTPgwZ9PZ0ARAAobxL6y/gI6wBk/NXocuYwY8IrUs3LVpMXrrnHqQ/p/dK
++pQgMuVyWejudtYp+CLMjIjSasvIaNVg+zYt1W5Dn6T60X5hywBeo4GtpVVCoTlaY
++6iuFgR2z+V/dBccCqojLefiJsbj0cBq8nUAOy25nD4CQU5JbuX7exyRMLLancyYP
++OKTqbUHy9tOCm2W9nRMKXiRrYp+nNbpyOkaG0eRJPnotFd/WnA/SvG7gPkjnHwAS
++ibGgJg20AI6reJa2U8i1LygRz0P5qavtx5P6jZut67lmosqoRuxuxnJBYKinThHZ
++iRhv9cgrfFxJ+xvBNBuNWvPMMFqhcwGt7iDV6tRs3KX05n1bzT08tw/GLWn/RkpH
++WuspFTsHsOlaCGYGHfxy9//0u4hk5He9dtSVHrZbYDkhAN9Zjeet0dbNjmfPOsik
++1w8WfvttVEUOt3KOIfvCeSKPy1whqwB/AVvTni5BjQAFfeviYAsQ6JKf1P8z7SwP
++eb3hHp6iOittpl93wcBCY0G9GDht3L5RRTjSsoEgUq5MmiXZcmeMFB9wWXmTrZXq
++qpebrhy5DGbcyJF9RTkFeR+1pMIhkHrFc0dH1DxQ092n5Ag7KSmn7u/ue1mft62V
++BzCwiWw2Qu2G5bFTtyNsOpA5NxFtGFAqmg+LC5xJVyvQgdNA8kkQ70+/CBMOz5LS
++wK4BManaZdgcxOXJpfzh+AtLijjKOKMkNNJvSc1ecU8v++k1oiEy3e7sgNfNkmWB
++4yP977lH3CxnAM90NNZ2HFQOg9bqMf56fux/2WSOgrF7xpDUuA2XXZ28XgCbbHpa
++0Rmv8Q0qkpZSAEq9PZOcdkG8T7st6vcC3gQEdj+ufnQp2qZHE6kB71S/wSsFmNQ5
++D4F8TIgztH7jo2EScvTigjj7EnmlfvmOo7GmFCuvtKd6yeLHRAxhx0gFKv2jcQ7i
++sApqRoJh/Tx9YATxy1CzqRCYpE5dlCc1dY5THDMSVnXiSJZLR7peI8Bm5uIB/Nr6
++y1ZAGOP5yT/YPbpCKhK1yOZ05Dp6I1/froahTOmEBB79g39MbEF31CHAAwnm+Ao0
++T/Z6ymeQPl6OhG+DSE9nH6Up80QcaAjrgkILYEhtvQ8Iq3s54MXrfvyiEsBa7uCo
++hSppoNf12bygIu4FR2I8CGZyl5ZKZUek/OoIEWlZqM8=
++=8qd/
++-----END PGP MESSAGE-----
