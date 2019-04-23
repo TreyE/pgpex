@@ -12,6 +12,12 @@ defmodule Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedData do
     header_written: false
   ]
 
+  @behaviour Pgpex.Primitives.Behaviours.WritableFile
+
+  def wrap_as_file(%__MODULE__{} = w) do
+    Pgpex.Primitives.Behaviours.WritableFile.wrap_as_file(__MODULE__, w)
+  end
+
   def initialize({:aes, key}, f) do
     {first_block, data_prefix, h_update, encryptor, finalizer} = Pgpex.SessionEncryptors.Aes.init_for(key)
     tag = Pgpex.PacketWriters.WriterUtils.new_format_tag(18)
@@ -28,19 +34,19 @@ defmodule Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedData do
     }
   end
 
-  def write(%__MODULE__{} = w, new_data) do
+  def binwrite(%__MODULE__{} = w, new_data) do
     updated_hash = :crypto.hash_update(w.hash_status, new_data)
     {new_iv, new_buff, to_write} = w.encryptor.(w.buffer, new_data, w.current_iv, w.session_key)
     new_full_buff = w.write_buffer <> to_write
     {remaining_buff, h_written} = chomp_me(new_full_buff, w.io, w.header_written)
-    %__MODULE__{
+    {:ok, %__MODULE__{
       w |
         current_iv: new_iv,
         buffer: new_buff,
         hash_status: updated_hash,
         write_buffer: remaining_buff,
         header_written: h_written
-    }
+    }}
   end
 
   defp chomp_me(<<eatable::binary-size(512), rest::binary>>, f, _) do
@@ -61,7 +67,7 @@ defmodule Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedData do
   end
 
   def finalize(%__MODULE__{} = w_before_mdc_bytes) do
-    w = write(
+    {:ok, w} = binwrite(
       w_before_mdc_bytes,
       <<0xD3::big-unsigned-integer-size(8), 0x14::big-unsigned-integer-size(8)>>
     )

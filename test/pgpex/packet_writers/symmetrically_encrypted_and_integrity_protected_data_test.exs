@@ -24,10 +24,9 @@ defmodule Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedDataTes
       {:aes, key_bytes},
       written_message_file
     )
-    w_2 = Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedData.write(
-      w_1,
-      the_test_string
-    )
+    out_pid = Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedData.wrap_as_file(w_1)
+    IO.binwrite(out_pid, the_test_string)
+    {:ok, w_2} = Pgpex.Primitives.Behaviours.WritableFile.unwrap(out_pid)
     Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedData.finalize(
       w_2
     )
