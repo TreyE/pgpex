@@ -14,7 +14,7 @@ defmodule Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedDataTes
       k.public_key,
       :aes_256,
       key_bytes,
-      <<0::unsigned-big-integer-size(64)>>)
+      <<0xE8D33E0C19F4F674::unsigned-big-integer-size(64)>>)
     IO.binwrite(written_message_file, packet)
 
     the_test_string = """
@@ -25,7 +25,9 @@ defmodule Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedDataTes
       written_message_file
     )
     out_pid = Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedData.wrap_as_file(w_1)
-    IO.binwrite(out_pid, the_test_string)
+    ld = Pgpex.PacketWriters.LiteralData.initialize(out_pid, "A FILE NAME", 0)
+    {:ok, ld_2} = Pgpex.PacketWriters.LiteralData.binwrite(ld, the_test_string)
+    Pgpex.PacketWriters.LiteralData.finalize(ld_2)
     {:ok, w_2} = Pgpex.Primitives.Behaviours.WritableFile.unwrap(out_pid)
     Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedData.finalize(
       w_2
@@ -56,7 +58,13 @@ defmodule Pgpex.PacketWriters.SymmetricallyEncryptedAndIntegrityProtectedDataTes
       Pgpex.SessionDecryptors.AesSessionStream,
       session_reader
     )
-    ^the_test_string = IO.binread(readable_session_data, :all)
+    {:ok, new_headers} = Pgpex.PacketReader.read_headers(readable_session_data)
+    new_p_results = Enum.map(new_headers, fn(h) ->
+      Pgpex.Packet.parse_packet(readable_session_data, h)
+    end)
+    lit_packet = Enum.at(new_p_results, 0)
+    lit_packet_reader = Pgpex.Primitives.SkipFileReader.wrap_as_file(lit_packet.reader)
+    ^the_test_string = IO.binread(lit_packet_reader, :all)
     :file.close(readable_session_data)
     :file.close(f)
     File.rm!(f_name)

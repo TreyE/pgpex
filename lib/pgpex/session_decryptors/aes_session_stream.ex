@@ -37,7 +37,7 @@ defmodule Pgpex.SessionDecryptors.AesSessionStream do
     {:ok, %__MODULE__{sfr | position: l + 1}, l + 1}
   end
 
-  def position(%__MODULE__{end_data_position: l}, pos) when pos > l and pos >= 0 do
+  def position(%__MODULE__{end_data_position: l}, pos) when pos > (l + 1) and pos >= 0 do
     {:error, :einval}
   end
 
