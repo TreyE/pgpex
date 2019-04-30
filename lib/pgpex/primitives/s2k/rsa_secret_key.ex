@@ -131,34 +131,13 @@ defmodule Pgpex.Primitives.S2K.RSASecretKey do
     } = m, password) do
     salt = m.hash_salt
     iters = m.iterations
-    h_init_state = :crypto.hash_init(:sha)
-    h_state = hash_salted(h_init_state, password, salt, <<>>, iters)
-    final_h = :crypto.hash_final(h_state)
+    hash_input = stretch_values(password, salt, <<>>, iters)
+    final_h = :crypto.hash(:sha, hash_input)
     :binary.part(final_h, 0, 16)
   end
 
   defp calculate_session_key(m, _) do
     {:error, {:unsupported_s2k_session_key_calculation_set, m}}
-  end
-
-  defp hash_salted(h_state, _, _, _, 0) do
-    h_state
-  end
-
-  defp hash_salted(h_state, pword, salt, pre_pad, left) do
-    salted_pw = salt <> pword
-    salted_pw_size = byte_size(salted_pw)
-    case salted_pw_size > left do
-      false ->
-        hash_salted(
-          :crypto.hash_update(h_state, pre_pad <> salted_pw),
-          pword,
-          salt,
-          pre_pad,
-          left - salted_pw_size
-        )
-      _ -> :crypto.hash_update(h_state, pre_pad <> :binary.part(salted_pw, 0, left))
-    end
   end
 
   def unlock_key(
@@ -226,5 +205,17 @@ defmodule Pgpex.Primitives.S2K.RSASecretKey do
 
   defp create_rsa_private_key_record(m, e, d, p, q, u) do
     {:'RSAPrivateKey', 1, m, e, d, p, q, rem(d, p - 1), rem(d, q - 1), u, :asn1_NOVALUE}
+  end
+
+  defp stretch_values(pword, salt, pre_pad, iter) do
+    salted_pw = salt <> pword
+    salted_pw_size = byte_size(salted_pw)
+    copies = div(iter, salted_pw_size)
+    remainder = rem(iter, salted_pw_size)
+    remainder_bin = case remainder > 0 do
+      false -> <<>>
+      _ -> pre_pad <> :binary.part(salted_pw, 0, remainder)
+    end
+    :binary.copy(pre_pad <> salted_pw, copies) <> remainder_bin
   end
 end

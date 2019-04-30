@@ -23,7 +23,7 @@ defmodule Pgpex.Packets.SecretKeyTest do
       secret_subkey_encrypted = Enum.at(Enum.at(all_entries, 0), 3)
       {:error, {:s2k_checksum_mismatch, _, _}} = Pgpex.Primitives.S2K.RSASecretKey.unlock_key(secret_subkey_encrypted.secret_key, "SOMEBADPASSWORD")
       unlocked_key = Pgpex.Primitives.S2K.RSASecretKey.unlock_key(secret_subkey_encrypted.secret_key, "SOMEPASSWORD")
-      ^unlocked_key = read_rsa_priv_key
+      ^unlocked_key = read_rsa_priv_key()
   end
 
   defp read_rsa_priv_key() do

@@ -19,6 +19,3 @@
 2. Payload Compression Defaults
 3. Key Registry
 4. Reading of compression formats other than ZLIB
-
-# Tweaks
-1. Salted and iterated S2K takes quite a while to expand - shorten
