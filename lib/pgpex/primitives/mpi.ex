@@ -78,4 +78,16 @@ defmodule Pgpex.Primitives.Mpi do
       <<a::binary-size(mpi_bytes)>> -> {:ok, a}
     end
   end
+
+  def decode_first_mpi_from_bytes(<<>>) do
+    0
+  end
+
+  def decode_first_mpi_from_bytes(<<mpi_len::big-unsigned-integer-size(16), rest::binary>>) do
+    mpi_bits = mpi_len + 7
+    mpi_bytes = div(mpi_bits, 8)
+    mpi_bit_size = mpi_bytes * 8
+    <<mpi_val::big-unsigned-integer-size(mpi_bit_size), remainder::binary>> = rest
+    {:ok, mpi_val, remainder}
+  end
 end

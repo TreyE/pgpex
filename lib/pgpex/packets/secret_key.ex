@@ -40,6 +40,7 @@ defmodule Pgpex.Packets.SecretKey do
   }
 
   import Pgpex.Primitives.IOUtils
+  use Bitwise
 
   @spec parse(
           any(),
@@ -102,27 +103,46 @@ defmodule Pgpex.Packets.SecretKey do
     {:error, {:unsupported_packet_version, tag, v}}
   end
 
-  defp read_key_data(f, :rsa, _) do
-    with {:ok, m} <- Pgpex.Primitives.Mpi.read_mpi(f),
+  defp read_key_data(f, :rsa, l_left) do
+    with {:ok, c_pos} <- :file.position(f, :cur),
+         {:ok, m} <- Pgpex.Primitives.Mpi.read_mpi(f),
          {:ok, e} <- Pgpex.Primitives.Mpi.read_mpi(f),
-         {:ok, d, p, q, u} <- read_rsa_secret_key_data(f) do
+         {:ok, s2k} <- Pgpex.Primitives.S2K.RSASecretKey.read_rsa_s2k(f),
+         {:ok, n_pos} <- :file.position(f, :cur) do
+      process_rsa_key_data(s2k, m, e, f, l_left - (n_pos - c_pos))
+    end
+  end
+
+  defp process_rsa_key_data(:unencrypted, m, e, f, _) do
+    with ({:ok, d, p, q, u} <- read_rsa_plain_secret_key(f)) do
       {:ok, create_rsa_private_key_record(m, e, d, p, q, u)}
     end
   end
 
-  defp read_key_data(_, k_type, _) do
-    {:error, {:unsupported_key_type, k_type}}
+  defp process_rsa_key_data(:s2k_specifier_sha1, m, e, f, l_left) do
+    with {:ok, c_pos} <- :file.position(f, :cur),
+         s2k_rec = Pgpex.Primitives.S2K.RSASecretKey.new(m, e),
+         {:ok, s2k_rec_with_algo} <- Pgpex.Primitives.S2K.RSASecretKey.read_s2k_algo(s2k_rec, f),
+         {:ok, s2k_rec_with_s2k_specifier} <- Pgpex.Primitives.S2K.RSASecretKey.read_s2k_specifier(s2k_rec_with_algo, f),
+         {:ok, n_pos} <- :file.position(f, :cur) do
+      Pgpex.Primitives.S2K.RSASecretKey.process_s2k_parts(s2k_rec_with_s2k_specifier,f,l_left - (n_pos - c_pos))
+    end
   end
 
-  defp read_rsa_secret_key_data(f) do
-    binread_match(f, 1, :read_secret_key_version_eof, :unsupported_secret_key_s2k) do
-      <<0::big-unsigned-integer-size(8)>> ->
-        with {:ok, d} <- Pgpex.Primitives.Mpi.read_mpi(f),
-             {:ok, p} <- Pgpex.Primitives.Mpi.read_mpi(f),
-             {:ok, q} <- Pgpex.Primitives.Mpi.read_mpi(f),
-             {:ok, u} <- Pgpex.Primitives.Mpi.read_mpi(f) do
-          {:ok, d, p, q, u}
-        end
+  defp process_rsa_key_data(a, _, _, _, _) do
+    {:error, {:unsupported_secret_key_s2k, a}}
+  end
+
+  def process_s2k_data(s_algo,h_algo,_,_,_,_,_,_) do
+    {:error, {:unsupported_secret_key_s2k_algo_pairing, s_algo, h_algo}}
+  end
+
+  defp read_rsa_plain_secret_key(f) do
+    with {:ok, d} <- Pgpex.Primitives.Mpi.read_mpi(f),
+         {:ok, p} <- Pgpex.Primitives.Mpi.read_mpi(f),
+         {:ok, q} <- Pgpex.Primitives.Mpi.read_mpi(f),
+         {:ok, u} <- Pgpex.Primitives.Mpi.read_mpi(f) do
+      {:ok, d, p, q, u}
     end
   end
 
