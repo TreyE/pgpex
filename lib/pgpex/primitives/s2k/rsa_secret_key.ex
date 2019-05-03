@@ -36,6 +36,7 @@ defmodule Pgpex.Primitives.S2K.RSASecretKey do
   def read_s2k_algo(mod, f) do
     binread_match(f, 1, :read_secret_key_s2k_algo_eof, :unsupported_secret_key_s2k_algo) do
       <<0x07::big-unsigned-integer-size(8)>> -> {:ok, %__MODULE__{mod | sym_algo: :aes_128}}
+      <<0x09::big-unsigned-integer-size(8)>> -> {:ok, %__MODULE__{mod | sym_algo: :aes_256}}
     end
   end
 
@@ -48,6 +49,18 @@ defmodule Pgpex.Primitives.S2K.RSASecretKey do
   end
 
   def process_s2k_parts(%__MODULE__{specifier: :iterated_and_salted, sym_algo: :aes_128} = mod, f, l_left) do
+    process_s2k_salted_and_iterated_parts(mod, f, l_left)
+  end
+
+  def process_s2k_parts(%__MODULE__{specifier: :iterated_and_salted, sym_algo: :aes_256} = mod, f, l_left) do
+    process_s2k_salted_and_iterated_parts(mod, f, l_left)
+  end
+
+  def process_s2k_parts(mod, _, _) do
+    {:error, {:unsupported_secret_key_s2k_specifier, mod}}
+  end
+
+  defp process_s2k_salted_and_iterated_parts(%__MODULE__{specifier: :iterated_and_salted} = mod, f, l_left) do
     with {:ok, c_pos} <- :file.position(f, :cur),
          {:ok, m_with_h_algo} <- read_s2k_hash_algo(mod, f),
          {:ok, m_with_h_salt} <- read_s2k_salt(m_with_h_algo, f),
@@ -61,14 +74,26 @@ defmodule Pgpex.Primitives.S2K.RSASecretKey do
     end
   end
 
-  def process_s2k_parts(mod, _, _) do
-    {:error, {:unsupported_secret_key_s2k_specifier, mod}}
+  defp process_s2k_data(
+    %__MODULE__{
+      hash_algo: :sha1,
+      sym_algo: :aes_128
+    } = mod,
+    f,
+    l_left) do
+    with  {:ok, c_pos} <- :file.position(f, :cur),
+          {:ok, m_with_iv} <- read_s2k_iv_16(mod, f),
+          {:ok, n_pos} <- :file.position(f, :cur),
+          remaining = l_left - (n_pos - c_pos),
+          {:ok, finished_mod} <- read_remaining_packet_bytes(m_with_iv, f,remaining) do
+      {:ok, finished_mod}
+    end
   end
 
   defp process_s2k_data(
     %__MODULE__{
       hash_algo: :sha1,
-      sym_algo: :aes_128
+      sym_algo: :aes_256
     } = mod,
     f,
     l_left) do
@@ -136,6 +161,21 @@ defmodule Pgpex.Primitives.S2K.RSASecretKey do
     :binary.part(final_h, 0, 16)
   end
 
+  defp calculate_session_key(
+    %__MODULE__{
+      hash_algo: :sha1,
+      sym_algo: :aes_256,
+      specifier: :iterated_and_salted
+    } = m, password) do
+    salt = m.hash_salt
+    iters = m.iterations
+    hash_input_1 = stretch_values(password, salt, <<>>, iters)
+    hash_input_2 = stretch_values(password, salt, <<>>, iters)
+    h1 = :crypto.hash(:sha, hash_input_1)
+    h2 = :crypto.hash(:sha, <<0::big-unsigned-integer-size(8)>> <> hash_input_2)
+    h1 <> :binary.part(h2, 0, 12)
+  end
+
   defp calculate_session_key(m, _) do
     {:error, {:unsupported_s2k_session_key_calculation_set, m}}
   end
@@ -144,14 +184,28 @@ defmodule Pgpex.Primitives.S2K.RSASecretKey do
     %__MODULE__{
       hash_algo: :sha1,
       sym_algo: :aes_128,
-      specifier: :iterated_and_salted,
-      check_algo: :sha1
+      specifier: :iterated_and_salted
     } = m, password) do
     s_key = calculate_session_key(m, password)
     iv = m.initialization_vector
     e_bytes = m.encrypted_packet_bytes
     decrypted_bytes = decrypt_aes_block(iv, s_key, e_bytes, <<>>)
-    with ({:ok, data_bytes} <- check_private_bytes(:sha1, decrypted_bytes)) do
+    with ({:ok, data_bytes} <- check_private_bytes(m.check_algo, decrypted_bytes)) do
+      read_and_build_key(m, data_bytes)
+    end
+  end
+
+  def unlock_key(
+    %__MODULE__{
+      hash_algo: :sha1,
+      sym_algo: :aes_256,
+      specifier: :iterated_and_salted
+    } = m, password) do
+    s_key = calculate_session_key(m, password)
+    iv = m.initialization_vector
+    e_bytes = m.encrypted_packet_bytes
+    decrypted_bytes = decrypt_aes_block(iv, s_key, e_bytes, <<>>)
+    with ({:ok, data_bytes} <- check_private_bytes(m.check_algo, decrypted_bytes)) do
       read_and_build_key(m, data_bytes)
     end
   end
@@ -170,8 +224,26 @@ defmodule Pgpex.Primitives.S2K.RSASecretKey do
     end
   end
 
+  def check_private_bytes(:csum, private_bytes) do
+    <<hash_part::unsigned-big-integer-size(16)>> = :binary.part(private_bytes, byte_size(private_bytes) - 2, 2)
+    data_part = :binary.part(private_bytes, 0, byte_size(private_bytes) - 2)
+    hash_val = byte_by_byte_checksum(data_part, 0)
+    case hash_part do
+      ^hash_val -> {:ok, data_part}
+      _ -> {:error, {:s2k_checksum_mismatch, hash_part, hash_val}}
+    end
+  end
+
   def check_private_bytes(method, _) do
     {:error, {:unsupported_s2k_checksum_method, method}}
+  end
+
+  defp byte_by_byte_checksum(<<>>, total) do
+    rem(total, 65536)
+  end
+
+  defp byte_by_byte_checksum(<<b::big-unsigned-integer-size(8),rest::binary>>, total) do
+    byte_by_byte_checksum(rest, b + total)
   end
 
   defp decrypt_aes_block(_, _, <<>>, so_far) do

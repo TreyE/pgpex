@@ -129,6 +129,16 @@ defmodule Pgpex.Packets.SecretKey do
     end
   end
 
+  defp process_rsa_key_data(:s2k_specifier_csum, m, e, f, l_left) do
+    with {:ok, c_pos} <- :file.position(f, :cur),
+         s2k_rec = Pgpex.Primitives.S2K.RSASecretKey.new(m, e, :csum),
+         {:ok, s2k_rec_with_algo} <- Pgpex.Primitives.S2K.RSASecretKey.read_s2k_algo(s2k_rec, f),
+         {:ok, s2k_rec_with_s2k_specifier} <- Pgpex.Primitives.S2K.RSASecretKey.read_s2k_specifier(s2k_rec_with_algo, f),
+         {:ok, n_pos} <- :file.position(f, :cur) do
+      Pgpex.Primitives.S2K.RSASecretKey.process_s2k_parts(s2k_rec_with_s2k_specifier,f,l_left - (n_pos - c_pos))
+    end
+  end
+
   defp process_rsa_key_data(a, _, _, _, _) do
     {:error, {:unsupported_secret_key_s2k, a}}
   end
