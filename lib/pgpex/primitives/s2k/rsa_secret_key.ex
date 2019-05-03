@@ -81,13 +81,7 @@ defmodule Pgpex.Primitives.S2K.RSASecretKey do
     } = mod,
     f,
     l_left) do
-    with  {:ok, c_pos} <- :file.position(f, :cur),
-          {:ok, m_with_iv} <- read_s2k_iv_16(mod, f),
-          {:ok, n_pos} <- :file.position(f, :cur),
-          remaining = l_left - (n_pos - c_pos),
-          {:ok, finished_mod} <- read_remaining_packet_bytes(m_with_iv, f,remaining) do
-      {:ok, finished_mod}
-    end
+    process_s2k_data_iv_16(mod, f, l_left)
   end
 
   defp process_s2k_data(
@@ -95,6 +89,57 @@ defmodule Pgpex.Primitives.S2K.RSASecretKey do
       hash_algo: :sha1,
       sym_algo: :aes_256
     } = mod,
+    f,
+    l_left) do
+    process_s2k_data_iv_16(mod, f, l_left)
+  end
+
+  defp process_s2k_data(
+    %__MODULE__{
+      hash_algo: :sha256,
+      sym_algo: :aes_128
+    } = mod,
+    f,
+    l_left) do
+    process_s2k_data_iv_16(mod, f, l_left)
+  end
+
+  defp process_s2k_data(
+    %__MODULE__{
+      hash_algo: :sha256,
+      sym_algo: :aes_256
+    } = mod,
+    f,
+    l_left) do
+    process_s2k_data_iv_16(mod, f, l_left)
+  end
+
+  defp process_s2k_data(
+    %__MODULE__{
+      hash_algo: :sha512,
+      sym_algo: :aes_128
+    } = mod,
+    f,
+    l_left) do
+    process_s2k_data_iv_16(mod, f, l_left)
+  end
+
+  defp process_s2k_data(
+    %__MODULE__{
+      hash_algo: :sha512,
+      sym_algo: :aes_256
+    } = mod,
+    f,
+    l_left) do
+    process_s2k_data_iv_16(mod, f, l_left)
+  end
+
+  defp process_s2k_data(mod, _, _) do
+    {:error, {:unsupported_secret_key_s2k_algo_pairing, mod}}
+  end
+
+  defp process_s2k_data_iv_16(
+    mod,
     f,
     l_left) do
     with  {:ok, c_pos} <- :file.position(f, :cur),
@@ -106,13 +151,11 @@ defmodule Pgpex.Primitives.S2K.RSASecretKey do
     end
   end
 
-  defp process_s2k_data(mod, _, _) do
-    {:error, {:unsupported_secret_key_s2k_algo_pairing, mod}}
-  end
-
   defp read_s2k_hash_algo(mod, f) do
     binread_match(f, 1, :read_secret_key_s2k_hash_algo_eof, :unsupported_secret_key_s2k_hash_algo) do
       <<0x02::big-unsigned-integer-size(8)>> -> {:ok, %__MODULE__{mod | hash_algo: :sha1}}
+      <<0x08::big-unsigned-integer-size(8)>> -> {:ok, %__MODULE__{mod | hash_algo: :sha256}}
+      <<0x0A::big-unsigned-integer-size(8)>> -> {:ok, %__MODULE__{mod | hash_algo: :sha512}}
     end
   end
 
@@ -170,10 +213,61 @@ defmodule Pgpex.Primitives.S2K.RSASecretKey do
     salt = m.hash_salt
     iters = m.iterations
     hash_input_1 = stretch_values(password, salt, <<>>, iters)
-    hash_input_2 = stretch_values(password, salt, <<>>, iters)
     h1 = :crypto.hash(:sha, hash_input_1)
-    h2 = :crypto.hash(:sha, <<0::big-unsigned-integer-size(8)>> <> hash_input_2)
+    h2 = :crypto.hash(:sha, <<0::big-unsigned-integer-size(8)>> <> hash_input_1)
     h1 <> :binary.part(h2, 0, 12)
+  end
+
+  defp calculate_session_key(
+    %__MODULE__{
+      hash_algo: :sha256,
+      sym_algo: :aes_128,
+      specifier: :iterated_and_salted
+    } = m, password) do
+    salt = m.hash_salt
+    iters = m.iterations
+    hash_input_1 = stretch_values(password, salt, <<>>, iters)
+    h1 = :crypto.hash(:sha256, hash_input_1)
+    :binary.part(h1, 0, 16)
+  end
+
+  defp calculate_session_key(
+    %__MODULE__{
+      hash_algo: :sha256,
+      sym_algo: :aes_256,
+      specifier: :iterated_and_salted
+    } = m, password) do
+    salt = m.hash_salt
+    iters = m.iterations
+    hash_input_1 = stretch_values(password, salt, <<>>, iters)
+    h1 = :crypto.hash(:sha256, hash_input_1)
+    h1
+  end
+
+  defp calculate_session_key(
+    %__MODULE__{
+      hash_algo: :sha512,
+      sym_algo: :aes_128,
+      specifier: :iterated_and_salted
+    } = m, password) do
+    salt = m.hash_salt
+    iters = m.iterations
+    hash_input_1 = stretch_values(password, salt, <<>>, iters)
+    h1 = :crypto.hash(:sha512, hash_input_1)
+    :binary.part(h1, 0, 16)
+  end
+
+  defp calculate_session_key(
+    %__MODULE__{
+      hash_algo: :sha512,
+      sym_algo: :aes_256,
+      specifier: :iterated_and_salted
+    } = m, password) do
+    salt = m.hash_salt
+    iters = m.iterations
+    hash_input_1 = stretch_values(password, salt, <<>>, iters)
+    h1 = :crypto.hash(:sha512, hash_input_1)
+    :binary.part(h1, 0, 32)
   end
 
   defp calculate_session_key(m, _) do
@@ -186,13 +280,7 @@ defmodule Pgpex.Primitives.S2K.RSASecretKey do
       sym_algo: :aes_128,
       specifier: :iterated_and_salted
     } = m, password) do
-    s_key = calculate_session_key(m, password)
-    iv = m.initialization_vector
-    e_bytes = m.encrypted_packet_bytes
-    decrypted_bytes = decrypt_aes_block(iv, s_key, e_bytes, <<>>)
-    with ({:ok, data_bytes} <- check_private_bytes(m.check_algo, decrypted_bytes)) do
-      read_and_build_key(m, data_bytes)
-    end
+    unlock_secret_key_with_supported_s2k_pairing(m, password)
   end
 
   def unlock_key(
@@ -201,6 +289,50 @@ defmodule Pgpex.Primitives.S2K.RSASecretKey do
       sym_algo: :aes_256,
       specifier: :iterated_and_salted
     } = m, password) do
+    unlock_secret_key_with_supported_s2k_pairing(m, password)
+  end
+
+  def unlock_key(
+    %__MODULE__{
+      hash_algo: :sha256,
+      sym_algo: :aes_128,
+      specifier: :iterated_and_salted
+    } = m, password) do
+    unlock_secret_key_with_supported_s2k_pairing(m, password)
+  end
+
+  def unlock_key(
+    %__MODULE__{
+      hash_algo: :sha256,
+      sym_algo: :aes_256,
+      specifier: :iterated_and_salted
+    } = m, password) do
+    unlock_secret_key_with_supported_s2k_pairing(m, password)
+  end
+
+  def unlock_key(
+    %__MODULE__{
+      hash_algo: :sha512,
+      sym_algo: :aes_128,
+      specifier: :iterated_and_salted
+    } = m, password) do
+    unlock_secret_key_with_supported_s2k_pairing(m, password)
+  end
+
+  def unlock_key(
+    %__MODULE__{
+      hash_algo: :sha512,
+      sym_algo: :aes_256,
+      specifier: :iterated_and_salted
+    } = m, password) do
+    unlock_secret_key_with_supported_s2k_pairing(m, password)
+  end
+
+  def unlock_key(m, _) do
+    {:error, {:unsupported_s2k_session_key_calculation_set, m}}
+  end
+
+  def unlock_secret_key_with_supported_s2k_pairing(m, password) do
     s_key = calculate_session_key(m, password)
     iv = m.initialization_vector
     e_bytes = m.encrypted_packet_bytes
@@ -208,10 +340,6 @@ defmodule Pgpex.Primitives.S2K.RSASecretKey do
     with ({:ok, data_bytes} <- check_private_bytes(m.check_algo, decrypted_bytes)) do
       read_and_build_key(m, data_bytes)
     end
-  end
-
-  def unlock_key(m, _) do
-    {:error, {:unsupported_s2k_session_key_calculation_set, m}}
   end
 
   def check_private_bytes(:sha1, private_bytes) do

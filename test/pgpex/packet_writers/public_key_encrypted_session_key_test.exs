@@ -24,7 +24,6 @@ defmodule Pgpex.PacketWriters.PublicKeyEncryptedSessionKeyTest do
     end
     {:ok, [decrypted_session_key]} = Pgpex.Packets.PublicKeyEncryptedSessionKey.decrypt_session_key(pkesk, key_provider)
     {:ok, :aes_256, ^key_bytes} = (Pgpex.Primitives.SessionKey.decode_session_key(decrypted_session_key))
-    ep = Enum.at(p_results, 1)
   end
 
   defp read_rsa_public_sub_key_packet() do
